@@ -9,9 +9,13 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 library(readr)
 library(tm)
+library(dplyr)
+library(hunspell)
+library(ggplot2)
+memory.limit(100000)
 ```
 
-# Data Processing
+# Data Import
 
 ```{r data-import}
 # Set directories for files
@@ -19,55 +23,123 @@ setwd("C:/Users/amanafpour/Desktop/final/en_US")
 
 # Load the dataset
 filenames <- c("en_US.blogs.txt", "en_US.news.txt", "en_US.twitter.txt")
-df <- data.frame(file = character(), lines = character())
+dfread <- data.frame(file = character(), lines = character())
+linesnmax <- 50000 #Set maximum for number of lines read of each file
 for (filename in filenames) {
-  lins <- readr::read_lines(filename)
+  lins <- readr::read_lines(filename, n_max = linesnmax) 
   newdf <- data.frame(file = filename, lines = lins)
-  df <- rbind(df, newdf)
+  dfread <- rbind(df, data.frame(file = filename, lines = lins))
 }
-df$file<-as.factor(df$file)
+dfread$file<-as.factor(dfread$file)
+
+# Randomly select small subset of data
+nsamp <- 2000
+set.seed(34341)
+dftibble <- dfread %>% group_by(file) %>% sample_n(size = nsamp)
+df <- as.data.frame(dftibble)
 ```
 
-# Exploratory Data Analysis
+It is worth noting, for testing purposes and RAM limitations, only a small subset (**`r nsamp`** samples per input file) was selected with equal amounts of samples for each input file. Also, only the first **`r format(linesnmax, scientific = F)`** lines were read from each input file.
 
-```{r data-analysis}
-df <- df[1:10000,] # Use subset of data initially
+# Data Cleaning
 
+```{r data-cleaning}
+Clean_Line <- function(string){
+    # Lowercase
+    temp <- tolower(string)
+    # Remove everything that is not a letter or an apostrophe (')
+    temp <- gsub(pattern = "[^a-zA-Z\\s|^']", replacement = " ", x = temp)
+    # Remove extra whitespace
+    temp <- gsub(pattern = "\\s+", replacement = " ", x = temp)
+    # Remove explicitly profane words
+    profanity <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt")
+    temp <- removeWords(temp, profanity)
+}
+df$lines <- Clean_Line(df$lines)
+```
+
+# Tokenization
+
+```{r tokenization}
+# Tokenization of single words
 docs <- VCorpus(VectorSource(df$lines))
 dtm <- DocumentTermMatrix(docs)
 freq <- colSums(as.matrix(dtm))
 ord <- order(freq, decreasing = T)
-barplot(freq[ord][1:500], main = "Frequency of top 500 words (trucated graph)", ylab = "Frequency", ylim = c(0,2000))
-freqpercent <- head(table(freq)/length(freq), 10) * 100
-barplot(freqpercent,
-        main = "Histogram of Frequencies",
-        xlab = "Number of times a word is used",
-        ylab = "Percent of words in dictionary")
+freq <- freq[ord]
 
-# Evaluate 2-grams and 3-grams
+# Tokenization of 2-grams and 3-grams
 BigramTokenizer <-
   function(x)
     unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
-
 TrigramTokenizer <-
   function(x)
     unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)
-
 dtmBigram <- DocumentTermMatrix(docs, control = list(tokenize = BigramTokenizer))
 dtmTrigram <- DocumentTermMatrix(docs, control = list(tokenize = TrigramTokenizer))
 freqBigram <- colSums(as.matrix(dtmBigram))
 freqTrigram <- colSums(as.matrix(dtmTrigram))
 ordBigram <- order(freqBigram, decreasing = T)
 ordTrigram <- order(freqTrigram, decreasing = T)
+freqBigram <- freqBigram[ordBigram]
+freqTrigram <- freqTrigram[ordTrigram]
 ```
 
-Based on the results above we can conclude:
+# Exploratory Data Analysis
 
-- There a total of `r length(freq)` different words in the dictionary for this data set
-- The majority of words (`r round(freqpercent[1],1)`%) are used only once 
-- Based on the top words barpllot above, there is a share drop in frequency
+```{r exploratory-analysis}
+# Function for plotting terms vs occurrences
+plot_occurrences <- function(freqplot){
+  wf <- data.frame(term = names(freqplot), occurrences = freqplot, row.names = 1:length(freqplot))[1:20,]
+  ggplot(wf, aes(term, occurrences)) +
+    geom_bar(stat="identity") +
+    coord_flip() +
+    scale_x_discrete(limits=wf$term)
+}
+
+# Plot occurences of single words, 2-grams, and 3-grams
+plot_occurrences(freq) + ggtitle("Occurrences of top single words (truncated graph)")
+plot_occurrences(freqBigram) + ggtitle("Occurrences of top 2-grams")
+plot_occurrences(freqTrigram) + ggtitle("Occurrences of top 3-grams")
+
+# Unique words required for 50% and 90% of all words
+nwords <- NULL
+percentcover <- NULL
+for (i in 1:length(freq)){
+  nwords = c(nwords, i)
+  percentcover <- c(percentcover, sum(freq[1:i])/sum(freq)*100)
+}
+plot(x = nwords, y = percentcover,
+     main = "Percent coverage of words",
+     xlab = "Number of words",
+     ylab = "Percent coverage (%)")
+nwords.5 = nwords[which(percentcover>.5)[1]]
+nwords.9 = nwords[which(percentcover>.9)[1]]
+
+# Determine if word is in the english dictionary
+indictionary <- hunspell_check(names(freq))
+
+# Estimate how many lines were in english
+lang <- detect_language(df$lines)
+num_en <- sum(lang=="en")
+
+# Extract stems from words
+stem_doc <- stemDocument(names(freq))
+stems <- unique(stem_doc)
+```
+
+Based on the results above we observe that:
+
+- There a total of **`r length(freq)`** unique words in the subset of this corpora
+- The majority of words (**`r round(freqpercent[1],1)`**%) are used only once 
+- Based on the frequency plots above, the word frequencies appear to have a poisson distribution
+- The top **`r nwords.5`** unique words cover 50% of all word instances and the top **`r nwords.9`** unique words cover 90% of all word instances
+- **`r sum(indictionary == F)`** of the words were not in the English dictionary
+- In addition, the cld3 package was used to evaluate each line from the dataset. **`r num_en`** of the **`r length(df$lines)`** total lines were detected to be English. However, the accuracy of the cld3 package functions would require further validation.
+- By stemming, the number of words can be reduced down to **`r length(stems)`** stem words
 
 # Other code (for quizes)
+
 ```{r}
 dftwitter <- df[which(df$file=="en_US.twitter.txt"),]
 dt = dftwitter$lines
