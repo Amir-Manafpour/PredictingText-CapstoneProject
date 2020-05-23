@@ -23,12 +23,13 @@ setwd("C:/Users/amanafpour/Desktop/final/en_US")
 
 # Load the dataset
 filenames <- c("en_US.blogs.txt", "en_US.news.txt", "en_US.twitter.txt")
+dfread <- NULL
 dfread <- data.frame(file = character(), lines = character())
 linesnmax <- 50000 #Set maximum for number of lines read of each file
 for (filename in filenames) {
   lins <- readr::read_lines(filename, n_max = linesnmax) 
   newdf <- data.frame(file = filename, lines = lins)
-  dfread <- rbind(df, data.frame(file = filename, lines = lins))
+  dfread <- rbind(dfread, newdf)
 }
 dfread$file<-as.factor(dfread$file)
 
