@@ -1,0 +1,9 @@
+base
+readr
+NLP
+tm
+dplyr
+hunspell
+ggplot2
+tokenizers
+cld3
