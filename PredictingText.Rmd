@@ -55,6 +55,7 @@ for (file in levels(df$file)){
   if (is.null(docs)) {docs <- tempdoc}
   else {docs <- c(docs, tempdoc)}
 }
+docsOrig <- docs
 ```
 
 It is worth noting, for testing purposes and RAM limitations, the first **`r format(linesnmax, scientific = F)`** lines were read from each input file and then only a small subset (**`r nsamp`** samples per input file) was selected with equal number of samples per input file to generate the corpora for analysis.
@@ -63,7 +64,7 @@ It is worth noting, for testing purposes and RAM limitations, the first **`r for
 
 The function defined below cleans the corpus. Profanity is removed but only the most explicit swear words. Removal of stopwords is left as an option for the function because we may wan to include them in the prediction model.
 
-```{r data-cleaning}
+```{r data-cleaning-funcs}
 # Punctuation to be removed during tokenization, not here, because periods '.' will be
 # used to determine sentences in the tokenization section. 
 Clean_Corpus <- function(corpus, removeStpwrds = T){
@@ -92,15 +93,15 @@ Clean_Corpus <- function(corpus, removeStpwrds = T){
     }
   return(corpus)
 }
-docsOrig <- docs
-docs <- Clean_Corpus(docs)
 ```
 
 # Tokenization
 
 A custom function ngramTokenizer is defined for n-gram tokenization that is used in the DocumentTermMatrix control options. This custom function ensures that the corpora is first divided into individual sentences before tokenizing into words, in order to avoid tokenizing words from different sentences. The Get_Freq function summarizes all rows in the matrix into one vector and the getDoc_ByID function is defined if we want to extract a row from the corpus to evaluate independently.
 
-```{r tokenization}
+```{r tokenization-funcs}
+# TODO: convert tm corpus to quanteda corpus and change code as required
+
 # ngram tokenization function
 ngramTokenizer <- function(x, n){
     sens <- unlist(lapply(tokenize_lines(as.String(x)), tokenize_sentences), use.names = F)
@@ -130,14 +131,6 @@ Get_Freq <- function(dtminput){
 
 # Custom function for getting doc from corpus
 getDoc_ByID <- function(corpus, id) corpus[grep(id, unlist(meta(corpus, "id")), fixed = T)]
-
-# Tokenization of single words, 2-grams, and 3-grams
-freqWords <- Get_Freq(Get_dtm(docs))
-freqWords_blogs <- Get_Freq(Get_dtm(getDoc_ByID(docs, "blogs")))
-freqWords_news <- Get_Freq(Get_dtm(getDoc_ByID(docs, "news")))
-freqWords_twitter <- Get_Freq(Get_dtm(getDoc_ByID(docs, "twitter")))
-freqBigram <- Get_Freq(Get_dtm(docs, n = 2))
-freqTrigram <- Get_Freq(Get_dtm(docs, n = 3))
 ```
 
 # Exploratory Data Analysis
@@ -145,6 +138,15 @@ freqTrigram <- Get_Freq(Get_dtm(docs, n = 3))
 The document-term matrices and n-grams are further evaluated below for all three documents together and separately. A custom function is defined to plot different frequency vectors.
 
 ```{r exploratory-analysis}
+# Clean corpus removing stopwords and tokenize
+docs <- Clean_Corpus(docs)
+freqWords <- Get_Freq(Get_dtm(docs))
+freqWords_blogs <- Get_Freq(Get_dtm(getDoc_ByID(docs, "blogs")))
+freqWords_news <- Get_Freq(Get_dtm(getDoc_ByID(docs, "news")))
+freqWords_twitter <- Get_Freq(Get_dtm(getDoc_ByID(docs, "twitter")))
+freqBigram <- Get_Freq(Get_dtm(docs, n = 2))
+freqTrigram <- Get_Freq(Get_dtm(docs, n = 3))
+
 # Function for plotting terms vs occurrences
 plot_occurrences <- function(freqplot, nwords = 20){
   wf <- data.frame(term = names(freqplot),
@@ -202,13 +204,23 @@ Based on the results above we observe that:
 # n-gram model development
 
 ```{r modeling}
-# generate ngrams including all stopwords
+# Clean corpus including stopwords and tokenize
 docsSW <- Clean_Corpus(docsOrig, removeStpwrds = F)
 freqWordsSW <- Get_Freq(Get_dtm(docsSW))
 freqBigramSW <- Get_Freq(Get_dtm(docsSW, n = 2))
 freqTrigramSW <- Get_Freq(Get_dtm(docsSW, n = 3))
 
-#set up matrix with unigram words
+# Convert frequency vectors into data tables and split words in ngram cols
+freqdt <- data.table(term = names(freqWordsSW), freq = freqWordsSW)
+
+freqdt_bi <- data.table(term = names(freqBigramSW), freq = freqBigramSW)
+head(separate(freqdt_bi, term, NA, sep = " "))
+
+wrds <- sapply(sapply(names(freqBigramSW), strsplit, split = " "), unlist)
+
+
+
+# set up matrix with unigram words
 
 
 # evaluate bigrams
