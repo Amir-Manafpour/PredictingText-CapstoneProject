@@ -14,6 +14,8 @@ library(hunspell)
 library(ggplot2)
 library(tokenizers)
 library(cld3)
+library(data.table)
+library(tidyr)
 memory.limit(100000)
 ```
 
@@ -129,6 +131,12 @@ Get_Freq <- function(dtminput){
   return(freq)
 }
 
+# Custom function to return only english terms of freq vector
+getEngFreq <- function(freqV) {
+  wrongTerms <- hunspell(names(freqV))
+  freqV[sapply(wrongTerms, identical, character(0))]
+}
+
 # Custom function for getting doc from corpus
 getDoc_ByID <- function(corpus, id) corpus[grep(id, unlist(meta(corpus, "id")), fixed = T)]
 ```
@@ -204,27 +212,73 @@ Based on the results above we observe that:
 # n-gram model development
 
 ```{r modeling}
-# Clean corpus including stopwords and tokenize
+# Clean corpus (do not remove stopwords) and tokenize
 docsSW <- Clean_Corpus(docsOrig, removeStpwrds = F)
 freqWordsSW <- Get_Freq(Get_dtm(docsSW))
 freqBigramSW <- Get_Freq(Get_dtm(docsSW, n = 2))
 freqTrigramSW <- Get_Freq(Get_dtm(docsSW, n = 3))
 
+# Remove nonenglish words from freq vectors
+freqWordsSW <- getEngFreq(freqWordsSW)
+freqBigramSW <- getEngFreq(freqBigramSW)
+freqTrigramSW <- getEngFreq(freqTrigramSW)
+
 # Convert frequency vectors into data tables and split words in ngram cols
-freqdt <- data.table(term = names(freqWordsSW), freq = freqWordsSW)
+freqdt_uni <- data.table(wrd1 = names(freqWordsSW), freq = freqWordsSW)
 
 freqdt_bi <- data.table(term = names(freqBigramSW), freq = freqBigramSW)
-head(separate(freqdt_bi, term, NA, sep = " "))
+freqdt_bi[, c("wrd1", "wrd2"):=tstrsplit(term, " ")]
 
-wrds <- sapply(sapply(names(freqBigramSW), strsplit, split = " "), unlist)
+freqdt_tri <- data.table(term = names(freqTrigramSW), freq = freqTrigramSW)
+freqdt_tri[, c("wrd1", "wrd2", "wrd3"):=tstrsplit(term, " ")]
+freqdt_tri[, wrd12 := paste(wrd1, wrd2, sep = " ")]
 
+# Calculate probabilities and logs
+freqdt_uni[, c("p"):= freq / sum(freq)]
 
+freqdt_bi[, c("wrd1Freq"):= sum(freq), by = .(wrd1)]
+freqdt_bi[, c("p_wrd2"):=freq / wrd1Freq]
+freqdt_bi[, c("logp_wrd2"):=log(p_wrd2)]
 
-# set up matrix with unigram words
+freqdt_tri[, c("wrd12Freq") := sum(freq), by = .(wrd12)]
+freqdt_tri[, c("p_wrd3") := freq / wrd12Freq]
+freqdt_tri[, c("logp_wrd3") := log(p_wrd3)]
 
+# Create prediction functions
+predictWrd2 <- function(bidt, wrd1input) {
+  subdt <- bidt[wrd1 == wrd1input]
+  setorderv(subdt, c("logp_wrd2"), c(-1))
+  predictTop <- subdt$wrd2[1:10]
+  predictTop
+}
 
-# evaluate bigrams
+predictWrd3 <- function(tridt, wrd12input) {
+  subdt <- tridt[wrd12 == wrd12input]
+  setorderv(subdt, c("logp_wrd3"), c(-1))
+  predictTop <- subdt$wrd3[1:10]
+  predictTop
+}
 
+# define function that grabs first n words of sentence
+getSplitSent <- function(sen, nwrds){
+  wrds <- unlist(strsplit(sen, split = " "))
+  lastNwrds <- paste(tail(wrds,nwrds), collapse = " ")
+  remaining <- paste(head(wrds,length(wrds)-nwrds), collapse = " ")
+  c(remaining, lastNwrds)
+}
+
+getProbMatrix <- function(inputDocs, maxngram = 3) {
+  cleanDocs <- Clean_Corpus(inputDocs, removeStpwrds = F)
+  freqList <- list()
+  for (num in 2:maxngram){
+    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num)))
+    dt <- data.table(term = names(engFreqs), freq = engFreqs)
+    dt[,remainingTerm := getSplitSentList(term, num-1)[1]]
+    dt[,lastWrd := getSplitSentList(term, num-1)[2]]
+    freqList[[num]] <- dt
+  }
+  
+}
 ```
 
 # Other code (for quizes)
