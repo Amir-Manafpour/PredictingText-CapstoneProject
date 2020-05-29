@@ -113,7 +113,7 @@ ngramTokenizer <- function(x, n){
     ngrams[!is.na(ngrams)]
   }
 
-Get_dtm <- function(corpus, n = 1, rmvPunc = T, spars = 1.0){
+Get_dtm <- function(corpus, n = 1, rmvPunc = T){
   if (n == 1){
     dtm <- DocumentTermMatrix(corpus, control = list(removePunctuation = rmvPunc))
     }
@@ -122,8 +122,12 @@ Get_dtm <- function(corpus, n = 1, rmvPunc = T, spars = 1.0){
                                 control = list(removePunctuation = T,
                                                tokenize = function(x) ngramTokenizer(x,n)))
   }
-  if (spars < 1.0 & spars > 0.0) dtm <- removeSparseTerms(dtm, spars)
   return(dtm)
+}
+
+#TODO: function below is incomplete
+Get_dfm <- function(tmcorp, n = 1, rmvPunc = T){
+  dfm(tmcorp)
 }
 
 # Get_Freq summarizes all rows in the document-term matrix into one vector
@@ -132,6 +136,10 @@ Get_Freq <- function(dtminput){
   ord <- order(freq, decreasing = T)
   freq <- freq[ord]
   return(freq)
+}
+
+getOrderedFreqDt <- function(dtminput){
+  
 }
 
 # Custom function to return only english terms of freq vector
@@ -223,8 +231,8 @@ getSplitSent <- function(sen, nwrds){
   c(remaining, lastNwrds)
 }
 
-getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, sparsity = 1.0) {
-  #TODO: add "sparse" option to reduce matrix size
+getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F) {
+  #TODO: reduce freq sizes to limit to 90% or so of words
   # Clean corpus (do not remove stopwords) and tokenize
   cleanDocs <- Clean_Corpus(inputDocs, removeStpwrds = F)
   freqList <- list()
@@ -232,7 +240,7 @@ getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, sparsity = 1
   # Convert frequency vectors into data tables and split words in ngram cols
   for (num in 2:maxngram){
     # Remove nonenglish words from freq vectors
-    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num, spars = sparsity)))
+    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num)))
     dt <- data.table(term = names(engFreqs), freq = engFreqs)
     dt[,remainingTerm := getSplitSent(term, 1)[1], by= 1:nrow(dt)]
     dt[,lastWrd := getSplitSent(term, 1)[2], by= 1:nrow(dt)]
@@ -276,7 +284,7 @@ predictNxtWrd <- function(inputpmat, inputsent) {
 
 
 ```{r model-testing}
-pmat_sp <- getProbMatrix(docsOrig, bareMatOnly = T, sparsity = .6)
+pmat_sp <- getProbMatrix(docsOrig, bareMatOnly = T)
 format(object.size(pmat_sp), units = "auto")
 print(predictNxtWrd(pmat_sp, "hello there"))
 ```
