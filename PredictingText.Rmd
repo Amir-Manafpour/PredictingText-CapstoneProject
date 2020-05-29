@@ -77,6 +77,7 @@ Clean_Corpus <- function(corpus, removeStpwrds = T){
   # Remove explicitly profane words
   profanity <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt")
   corpus <- tm_map(corpus, removeWords, profanity)
+  
   # Replace all misspelled words with a \n line break
   # badwrds <- unlist(hunspell(x))
   # corpus <- tm_map(corpus, content_transformer(function (x){
@@ -86,6 +87,7 @@ Clean_Corpus <- function(corpus, removeStpwrds = T){
   #   }
   #   return(x)
   # }))
+  
   # Remove extra whitespace BUT maintain \n line breaks
   whitespaceFUN <- content_transformer(function(x) gsub("[ ]+", " ",as.String(x)))
   corpus <- tm_map(corpus, whitespaceFUN)
@@ -111,7 +113,7 @@ ngramTokenizer <- function(x, n){
     ngrams[!is.na(ngrams)]
   }
 
-Get_dtm <- function(corpus, n = 1, rmvPunc = T){
+Get_dtm <- function(corpus, n = 1, rmvPunc = T, spars = 1.0){
   if (n == 1){
     dtm <- DocumentTermMatrix(corpus, control = list(removePunctuation = rmvPunc))
     }
@@ -120,6 +122,7 @@ Get_dtm <- function(corpus, n = 1, rmvPunc = T){
                                 control = list(removePunctuation = T,
                                                tokenize = function(x) ngramTokenizer(x,n)))
   }
+  if (spars < 1.0 & spars > 0.0) dtm <- removeSparseTerms(dtm, spars)
   return(dtm)
 }
 
@@ -211,55 +214,8 @@ Based on the results above we observe that:
 
 # n-gram model development
 
-```{r modeling}
-# Clean corpus (do not remove stopwords) and tokenize
-docsSW <- Clean_Corpus(docsOrig, removeStpwrds = F)
-freqWordsSW <- Get_Freq(Get_dtm(docsSW))
-freqBigramSW <- Get_Freq(Get_dtm(docsSW, n = 2))
-freqTrigramSW <- Get_Freq(Get_dtm(docsSW, n = 3))
-
-# Remove nonenglish words from freq vectors
-freqWordsSW <- getEngFreq(freqWordsSW)
-freqBigramSW <- getEngFreq(freqBigramSW)
-freqTrigramSW <- getEngFreq(freqTrigramSW)
-
-# Convert frequency vectors into data tables and split words in ngram cols
-freqdt_uni <- data.table(wrd1 = names(freqWordsSW), freq = freqWordsSW)
-
-freqdt_bi <- data.table(term = names(freqBigramSW), freq = freqBigramSW)
-freqdt_bi[, c("wrd1", "wrd2"):=tstrsplit(term, " ")]
-
-freqdt_tri <- data.table(term = names(freqTrigramSW), freq = freqTrigramSW)
-freqdt_tri[, c("wrd1", "wrd2", "wrd3"):=tstrsplit(term, " ")]
-freqdt_tri[, wrd12 := paste(wrd1, wrd2, sep = " ")]
-
-# Calculate probabilities and logs
-freqdt_uni[, c("p"):= freq / sum(freq)]
-
-freqdt_bi[, c("wrd1Freq"):= sum(freq), by = .(wrd1)]
-freqdt_bi[, c("p_wrd2"):=freq / wrd1Freq]
-freqdt_bi[, c("logp_wrd2"):=log(p_wrd2)]
-
-freqdt_tri[, c("wrd12Freq") := sum(freq), by = .(wrd12)]
-freqdt_tri[, c("p_wrd3") := freq / wrd12Freq]
-freqdt_tri[, c("logp_wrd3") := log(p_wrd3)]
-
-# Create prediction functions
-predictWrd2 <- function(bidt, wrd1input) {
-  subdt <- bidt[wrd1 == wrd1input]
-  setorderv(subdt, c("logp_wrd2"), c(-1))
-  predictTop <- subdt$wrd2[1:10]
-  predictTop
-}
-
-predictWrd3 <- function(tridt, wrd12input) {
-  subdt <- tridt[wrd12 == wrd12input]
-  setorderv(subdt, c("logp_wrd3"), c(-1))
-  predictTop <- subdt$wrd3[1:10]
-  predictTop
-}
-
-# define function that grabs first n words of sentence
+```{r predict-model-funcs}
+# define function that splits sentence
 getSplitSent <- function(sen, nwrds){
   wrds <- unlist(strsplit(sen, split = " "))
   lastNwrds <- paste(tail(wrds,nwrds), collapse = " ")
@@ -267,20 +223,63 @@ getSplitSent <- function(sen, nwrds){
   c(remaining, lastNwrds)
 }
 
-getProbMatrix <- function(inputDocs, maxngram = 3) {
+getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, sparsity = 1.0) {
+  #TODO: add "sparse" option to reduce matrix size
+  # Clean corpus (do not remove stopwords) and tokenize
   cleanDocs <- Clean_Corpus(inputDocs, removeStpwrds = F)
   freqList <- list()
+  freqList[[1]] <- maxngram
+  # Convert frequency vectors into data tables and split words in ngram cols
   for (num in 2:maxngram){
-    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num)))
+    # Remove nonenglish words from freq vectors
+    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num, spars = sparsity)))
     dt <- data.table(term = names(engFreqs), freq = engFreqs)
-    dt[,remainingTerm := getSplitSentList(term, num-1)[1]]
-    dt[,lastWrd := getSplitSentList(term, num-1)[2]]
+    dt[,remainingTerm := getSplitSent(term, 1)[1], by= 1:nrow(dt)]
+    dt[,lastWrd := getSplitSent(term, 1)[2], by= 1:nrow(dt)]
+    dt[,rTermFreq := sum(freq), by = .(remainingTerm)]
+    # Calculate probabilities and logs
+    dt[,p := freq / rTermFreq]
+    dt[,logp := log(p)]
+    if (bareMatOnly == T) dt[,c("term", "freq", "rTermFreq", "p"):=NULL]
     freqList[[num]] <- dt
   }
+  return(freqList)
+}
+
+predictNxtWrd <- function(inputpmat, inputsent) {
+  # determine starting n based on length of input sentence and maxngram in prob matrix
+  numWrds <- length(strsplit(inputsent, split = " ")[[1]])
+  maxngram <- inputpmat[[1]]
+  n <- numWrds + 1
+  if (n > maxngram) n <- maxngram
+  # Use "Backoff" to determine probabilities
+  #TODO: develop an actual "stupid backoff" model uses 0.4 x probability of next ngram down to calculate probabilities
+  for (i in n:2){
+    lastNWrds <- getSplitSent(inputsent, i - 1)[2]
+    # format input sentence
+    tempdoc <- VCorpus(VectorSource(lastNWrds),
+                       readerControl = list(reader=readPlain, language = "en"))
+    tempdoc <- Clean_Corpus(tempdoc, removeStpwrds = F)
+    lastNWrdsFormatted <- tempdoc[[1]]$content
+    # select corresponding ngram matrix
+    pdt <- inputpmat[[i]]
+    subpdt <- pdt[remainingTerm == lastNWrdsFormatted]
+    # if no match  for last-n-words then use next ngram down, otherwise break loop
+    if (nrow(subpdt)!=0) break
+  }
   
+  #TODO: optimize so whole list doesn't have to be ordered just to get top words
+  setorderv(subpdt, c("logp"), c(-1))
+  predictTop <- subpdt$lastWrd[1:5]
 }
 ```
 
+
+```{r model-testing}
+pmat_sp <- getProbMatrix(docsOrig, bareMatOnly = T, sparsity = .6)
+format(object.size(pmat_sp), units = "auto")
+print(predictNxtWrd(pmat_sp, "hello there"))
+```
 # Other code (for quizes)
 
 ```{r}
