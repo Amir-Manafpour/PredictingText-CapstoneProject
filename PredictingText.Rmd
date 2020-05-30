@@ -75,18 +75,8 @@ Clean_Corpus <- function(corpus, removeStpwrds = T){
   # Remove numbers
   corpus <- tm_map(corpus, removeNumbers)
   # Remove explicitly profane words
-  profanity <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt")
+  profanity <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
   corpus <- tm_map(corpus, removeWords, profanity)
-  
-  # Replace all misspelled words with a \n line break
-  # badwrds <- unlist(hunspell(x))
-  # corpus <- tm_map(corpus, content_transformer(function (x){
-  #   badwrds <- unlist(hunspell(x))
-  #   for (wrd in badwrds){
-  #     x <- gsub(wrd, "\n", as.String(x))
-  #   }
-  #   return(x)
-  # }))
   
   # Remove extra whitespace BUT maintain \n line breaks
   whitespaceFUN <- content_transformer(function(x) gsub("[ ]+", " ",as.String(x)))
@@ -104,7 +94,39 @@ Clean_Corpus <- function(corpus, removeStpwrds = T){
 A custom function ngramTokenizer is defined for n-gram tokenization that is used in the DocumentTermMatrix control options. This custom function ensures that the corpora is first divided into individual sentences before tokenizing into words, in order to avoid tokenizing words from different sentences. The Get_Freq function summarizes all rows in the matrix into one vector and the getDoc_ByID function is defined if we want to extract a row from the corpus to evaluate independently.
 
 ```{r tokenization-funcs}
-# TODO: convert tm corpus to quanteda corpus and change code as required
+# Rewrite in quanteda
+Get_dfm <- function(tmcorp, n = 1, rmvPunc = T){
+  qcorp <- corpus(tmcorp)
+  wrdTkns <- tokens(qcorp, remove_punct = rmvPunc)
+  ngramTkns <- tokens_ngrams(wrdTkns, n = n, concatenator = " ")
+  dfm(ngramTkns)
+}
+
+getOrderedFreqDt <- function(dfminput, spellCheck = T){
+  dt <- data.table(convert(dfminput, "data.frame"))
+  dt <- dt[,-c(1)] # remove first "document" column
+  freqv <- colSums(dt)
+  freqdt <- data.table(term = names(freqv), freq = freqv)
+  if (spellCheck == T) {
+    freqdt[, wrongTerms := hunspell(term)]
+    freqdt[, correctSpell := identical(wrongTerms[[1]], character(0)), by= 1:nrow(freqdt)]
+    freqdt <- freqdt[correctSpell==T, c("term", "freq")]
+  }
+  setorder(freqdt, -freq)
+  return(freqdt)
+}
+
+# Custom function for getting doc from corpus
+getDoc_ByID <- function(corpus, id) corpus[grep(id, unlist(meta(corpus, "id")), fixed = T)]
+```
+
+# Exploratory Data Analysis
+
+The document-term matrices and n-grams are further evaluated below for all three documents together and separately. A custom function is defined to plot different frequency vectors.
+
+```{r exploratory-analysis}
+# TODO: This section is entirely outdated compared to the rest of the document
+# Consider rewriting using latest functions OR just leave as seperate chunk from the rest
 
 # ngram tokenization function
 ngramTokenizer <- function(x, n){
@@ -125,11 +147,6 @@ Get_dtm <- function(corpus, n = 1, rmvPunc = T){
   return(dtm)
 }
 
-#TODO: function below is incomplete
-Get_dfm <- function(tmcorp, n = 1, rmvPunc = T){
-  dfm(tmcorp)
-}
-
 # Get_Freq summarizes all rows in the document-term matrix into one vector
 Get_Freq <- function(dtminput){
   freq <- colSums(as.matrix(dtminput))
@@ -138,25 +155,12 @@ Get_Freq <- function(dtminput){
   return(freq)
 }
 
-getOrderedFreqDt <- function(dtminput){
-  
-}
-
 # Custom function to return only english terms of freq vector
 getEngFreq <- function(freqV) {
   wrongTerms <- hunspell(names(freqV))
   freqV[sapply(wrongTerms, identical, character(0))]
 }
 
-# Custom function for getting doc from corpus
-getDoc_ByID <- function(corpus, id) corpus[grep(id, unlist(meta(corpus, "id")), fixed = T)]
-```
-
-# Exploratory Data Analysis
-
-The document-term matrices and n-grams are further evaluated below for all three documents together and separately. A custom function is defined to plot different frequency vectors.
-
-```{r exploratory-analysis}
 # Clean corpus removing stopwords and tokenize
 docs <- Clean_Corpus(docs)
 freqWords <- Get_Freq(Get_dtm(docs))
@@ -231,17 +235,19 @@ getSplitSent <- function(sen, nwrds){
   c(remaining, lastNwrds)
 }
 
-getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F) {
-  #TODO: reduce freq sizes to limit to 90% or so of words
+getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, coverage = 1.0) {
   # Clean corpus (do not remove stopwords) and tokenize
   cleanDocs <- Clean_Corpus(inputDocs, removeStpwrds = F)
   freqList <- list()
   freqList[[1]] <- maxngram
   # Convert frequency vectors into data tables and split words in ngram cols
   for (num in 2:maxngram){
-    # Remove nonenglish words from freq vectors
-    engFreqs <- getEngFreq(Get_Freq(Get_dtm(cleanDocs, n = num)))
-    dt <- data.table(term = names(engFreqs), freq = engFreqs)
+    dt <- getOrderedFreqDt(Get_dfm(cleanDocs, n=num, rmvPunc = T), spellCheck = T)
+    if (coverage > 0.0 & coverage < 1.0) {
+      dt[,sumFreq:=cumsum(freq)]
+      dt <- dt[sumFreq<coverage*sum(freq)]
+      dt <- dt[,-c("sumFreq")]
+    }
     dt[,remainingTerm := getSplitSent(term, 1)[1], by= 1:nrow(dt)]
     dt[,lastWrd := getSplitSent(term, 1)[2], by= 1:nrow(dt)]
     dt[,rTermFreq := sum(freq), by = .(remainingTerm)]
@@ -284,9 +290,18 @@ predictNxtWrd <- function(inputpmat, inputsent) {
 
 
 ```{r model-testing}
-pmat_sp <- getProbMatrix(docsOrig, bareMatOnly = T)
-format(object.size(pmat_sp), units = "auto")
-print(predictNxtWrd(pmat_sp, "hello there"))
+pmat_n2_c1 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = 1.0)
+pmat_n3_c1 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = 1.0)
+pmat_n4_c1 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = 1.0)
+pmat_n2_c.9 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .9)
+pmat_n3_c.9 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .9)
+pmat_n4_c.9 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .9)
+pmat_n2_c.8 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .8)
+pmat_n3_c.8 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .8)
+pmat_n4_c.8 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .8)
+
+format(object.size(pmat), units = "auto")
+print(predictNxtWrd(pmat, "hello there"))
 ```
 # Other code (for quizes)
 
