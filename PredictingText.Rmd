@@ -1,12 +1,16 @@
 ---
-title: "PredictingText"
-author: "AM"
+title: "Text Prediction using n-gram Models: Part 1 - Exploratory Data Analysis"
+author: "Amir Manafpour"
 date: "5/20/2020"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/amanafpour/Desktop/final/en_US")
 knitr::opts_chunk$set(echo = FALSE, cache = TRUE)
+knitr::knit_hooks$set(inline = function(x) {
+  if(!is.numeric(x)){ x }else{ prettyNum(round(x,2), big.mark=",") } 
+  })
 library(readr)
 library(ggplot2)
 library(tm)
@@ -16,19 +20,218 @@ library(tokenizers)
 library(cld3)
 library(data.table)
 library(knitr)
+library(gridExtra)
 
 memory.limit(100000)
 ```
 
 # Executive Summary
 
-This report outlines exploratory data analysis for the Coursera Capstone Dataset (https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip). The Data Import and Tokenization methods are explained and some key features of the text files are evaluated. Finally, the proposed prediction model methodology is explained and previewed.
+This report outlines exploratory data analysis for the Coursera Capstone project in the Data Science Specialization. The utilized data set can was downloaded from the link below.
+
+https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip
+
+In this article, the Data Import and Tokenization methods are explained and some key features of the text files are evaluated. Finally, the proposed prediction model methodology is explained and previewed. All the developed functions used in this study are listed at the end of this article as an appendix.
 
 # Data Import
 
-```{r data-import-funcs}
-# Load the dataset as data.table
+```{r, ref.label=c("data-import-funcs", "tokenization-funcs", "predict-model-funcs")}
+```
+
+The "getImportDt" function below imports all three text files from the working directory into a data.table.
+
+```{r, echo=TRUE}
+allLinesDt<- getImportDt(NULL, NULL)
+```
+
+```{r}
+kable(table(allLinesDt$file),
+      align = "c",
+      caption = "Number of lines observed for each imported text file",
+      col.names = c("Text Doc", "Number of Lines"),
+      format.args = list(big.mark = ","))
+```
+
+Based on the table above we can see that the twitter text file has a lot more lines than the news file, followed by the blogs file. Considering the large size of these text files, a smaller subset of the data is required to further evaluate them, as follows.
+
+```{r, echo=TRUE}
+linesnmax = 50000
+nsamp = 5000
+set.seed(34341)
+dtSubset <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
+docsOrig <- dtToQcorp(dtSubset)
+```
+
+For testing purposes and due to RAM limitations, only the first **`r format(linesnmax, scientific = F)`** lines were read from each input file and then only a small subset (**`r nsamp`** samples per input file) was selected from those lines, with equal number of samples per input file.
+
+The "dtToQcorp" function converts the data.table into a corpus using the quanteda package. The tm package was initially utilized for text processing/analysis but the switch to quanteda was made due to it's faster speed.
+
+Below, a document feature matrix is created using the quanteda package and the number of total words per document is sumamrized.
+
+```{r, echo=TRUE}
+dfmWrds <- dfm(docsOrig)
+numwords <- ntoken(dfmWrds)
+```
+
+```{r}
+kable(data.frame(txtfiles = names(numwords),
+                 nwrds = numwords,
+                 lines = rep(nsamp, length(numwords)),
+                 row.names = NULL),
+      align = "c",
+      caption = "Number of lines observed for each imported text file",
+      col.names = c("Text Doc File", "No. of words", "No. of lines read"),
+      format.args = list(big.mark = ","))
+```
+
+Based on the table above we can see that blogs have a lot more words per lines read, followed by news articles, followed by tweets. Typically, blogs  tend to have longer texts compared to news. And tweets are limited in characters and so would be expected to have the least number of words per line.
+
+# Tokenization
+
+To further analyze the text in each text file, n-grams were extracted from the document corpus. The "Get_qdfm" function receives a quanteda corpus and returns a n-gram tokenized document-feature matrix. Here are some assumptions made during tokenization of ngrams:
+
+- The text is first divided into individual sentences before tokenizing into ngrams, in order to avoid tokenizing words from different sentences. 
+- Stopwords are not removed for our analysis because our goal is word prediction (including stopword prediction) and not so much understanding context.
+- Punctuation and extra whitespace is removed from the ngrams.
+- Profanity (only explicit swear words) are removed from the ngrams.
+
+For further manipulation, the document-feature matrices are converted into ordered frequency data.tables using the "getOrderedFreqDt". All three text documents are summarized into one document-feature data table using this function. A spell check option is built into this custom function such that ngrams with any misspelled words are removed from the data table.
+
+### Misspelled and Non-english Words
+
+```{r}
+# Generate frequency data table including misspelled words
+freqWordsDt_misspelled <- getOrderedFreqDt(Get_qdfm(docsOrig, n = 1, removeStpwrds = F),
+                                           spellCheck = F)
+
+# Determine if word is in the English dictionary
+indictionary <- hunspell_check(freqWordsDt_misspelled$term)
+
+# Estimate how many lines were in English
+lang <- detect_language(dtSubset$lines)
+num_en <- table(lang)["en"]
+```
+
+It is possible some lines in the text corpora are misspelled or that they are not in English. For prediction model development it is not desirable to predict misspelled or non-English words for the user.
+
+- Using the hunspell package, it was found that out of **`r nrow(freqWordsDt_misspelled)`** unique words, **`r sum(indictionary == F)`** were not in the English dictionary.
+- In addition, the cld3 package was used to evaluate each line from the dataset. **`r num_en`** of the **`r nrow(dtSubset)`** total lines were detected to be English. However, the accuracy of the cld3 package functions would require further validation.
+
+Based on the results above, going forward, all n-grams that contain words that are not in the English dictionary based on the hunspell package, will be removed from the document-term data tables.
+
+# Analysis of Single words, 2-grams, and 3-grams 
+
+```{r exploratory-analysis, echo=TRUE}
+# Generate ngrams for subset of data
+freqWordsDt <- getOrderedFreqDt(Get_qdfm(docsOrig, n = 1, removeStpwrds = F), spellCheck = T)
+freqBigramDt <- getOrderedFreqDt(Get_qdfm(docsOrig, n = 2, removeStpwrds = F), spellCheck = T)
+freqTrigramDt <- getOrderedFreqDt(Get_qdfm(docsOrig, n = 3, removeStpwrds = F), spellCheck = T)
+
+# Extract stems from words
+stem_doc <- stemDocument(freqWordsDt$term)
+stems <- unique(stem_doc)
+
+# Determine unique words required for 50% and 90% of all words
+freqWordsDt[,coverage:=cumsum(freq)/sum(freq)]
+nwords.5 = nrow(freqWordsDt[coverage<.5])
+nwords.9 = nrow(freqWordsDt[coverage<.9])
+```
+
+```{r, fig.align="center"}
+# Plot occurrences of single words, 2-grams, and 3-grams
+plot_occurrences(freqWordsDt) + ggtitle("Occurrences of top single words ")
+plot_occurrences(freqBigramDt) +  ggtitle("Occurrences of top 2-grams")
+plot_occurrences(freqTrigramDt,30) + ggtitle("Occurrences of top 3-grams")
+plot(x = 1:nrow(freqWordsDt), y = freqWordsDt$coverage,
+     main = "Percent coverage of words",
+     xlab = "Number of words",
+     ylab = "Percent coverage (%)")
+```
+
+The frequencies of the top single, 2-grams, and 3-grams of the text of all three documents combined are summarized in the graphs above. Based on this analysis:
+
+- There are a total of **`r nrow(freqWordsDt)`** unique words in the subset of this corpora
+- The coverage graph shows the number of unique words vs the number of word instances that they cover. The top **`r nwords.5`** unique words cover 50% of all word instances and the top **`r nwords.9`** unique words cover 90% of all word instances
+- By stemming, the number of unique words can be reduced down to **`r length(stems)`** stem words. However, considering our goal is prediction of words and not prediction of stems or related words, stemming will not be used going forward in the the prediction models.
+- We notice that the majority of the top words and n-grams are actually considered "stopwords" and this is acceptable because prediction of stopwords is also within the scope of our prediction model.
+
+### Comparison of Text Documents
+
+The term frequencey graphs below compare the words used between the three texts document. To evaluate the context of the words used here, stopwords are removed from the frequencies shown in the graphs below.
+
+```{r}
+freqWordsDt_blogs <- getOrderedFreqDt(Get_qdfm(docsOrig["en_US.blogs.txt"],
+                                               n = 1,
+                                               removeStpwrds = T),
+                                      spellCheck = T)
+freqWordsDt_news <- getOrderedFreqDt(Get_qdfm(docsOrig["en_US.news.txt"],
+                                              n = 1,
+                                              removeStpwrds = T),
+                                     spellCheck = T)
+freqWordsDt_twitter <- getOrderedFreqDt(Get_qdfm(docsOrig["en_US.twitter.txt"],
+                                                 n = 1,
+                                                 removeStpwrds = T),
+                                        spellCheck = T)
+```
+
+```{r, fig.align="center"}
+plot_occurrences(freqWordsDt_blogs) + ggtitle("Occurrences of top single words - Blogs")
+plot_occurrences(freqWordsDt_news) +  ggtitle("Occurrences of top single words - News")
+plot_occurrences(freqWordsDt_twitter) + ggtitle("Occurrences of top single words - Twitter")
+```
+
+It's also interesting to note that the top word for news articles is **'`r freqWordsDt_news$term[1]`'** and the top 2 words for tweets are **'`r freqWordsDt_twitter$term[1]`'** and **'`r freqWordsDt_twitter$term[2]`'**
+
+# n-gram prediction model development
+
+The function "getProbMatrix" was developed to generate a list of ngram probability matrices by:
+
+- Generating ngram frequencies
+- Determining probability of the last word occuring in each n-gram term given the string of words prior to the last word.
+- Storing these probabilities in a list for each n-gram. For example if the maximum n is determined to be 3, a list variable of 3 ngram probability matrices are returned: a unigram matrix, a bigram matrix, and a trigrammatrix.
+- A "coverage" option is provided to the user if only a subset of the ngrams is required to cover x percent of all the word instances. This criteria will be tweaked during the final prediction model development.
+- Efficiently return the resulting matrices as "data.table" to be stored with minimum size.
+
+The function "predictNxtWrd" was developed to predict the next word provided a series of words by:
+
+- Receiving a stored probability matrix containing n-gram probabilities.
+- Reformatting the phrase provided by the user as input (i.e., spell check, select the last (n-1) number of words in phrase, ensure selected words start from beginning of sentence)
+- By searching for the phrase in the n-gram probabilities and determining the most probable next word.
+- Using the back-off model, if the input phrase is not found in the n-gram, the (n-1)-gram probability is searched for a matching term and if not the (n-2)-gram and so on.
+- Returning a list of the top 5 list of next words in order starting with the most probable.
+
+# Model Evaluation and Future Development
+
+Going forward I intend to take the following steps to further evaluate and develop the prediction model:
+
+- Calculate "perplexity" based on a given test sample set.
+- Evaluate effect of parameters (highest n-gram to use and % coverage to use) on perplexity.
+- Evaluate effect of parameters on the size of resulting probability matrix and the run time of the prediction model.
+- Incorporate the "stupid back-off" model into determining n-gram probabilities
+- Incorporate "smoothing" of probabilities for unobserved n-grams in the test data.
+
+```{r model-testing, eval=FALSE}
+pmat_n2_c1 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = 1.0)
+pmat_n3_c1 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = 1.0)
+pmat_n4_c1 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = 1.0)
+pmat_n2_c.9 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .9)
+pmat_n3_c.9 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .9)
+pmat_n4_c.9 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .9)
+pmat_n2_c.8 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .8)
+pmat_n3_c.8 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .8)
+pmat_n4_c.8 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .8)
+
+format(object.size(pmat), units = "auto")
+print(predictNxtWrd(pmat, "hello there"))
+```
+
+# Appendix: All custom functions used in analysis
+
+```{r data-import-funcs, echo=TRUE}
+# Function used to load text files in current directory as data.table
 getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL){
+  # linesnmax and nsamp can take on NULL values which mean they are infinity in this function
+  # If txtfilename is not defined, all files in current directory are read
   if (is.null(txtfilename)) {
     filenames <- list.files(".") #read filenames from directory
   } else {
@@ -36,6 +239,7 @@ getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL){
   }
   dtread <- NULL
   dtread <- data.table(file = character(), lines = character())
+  # Only read the first linesnmax lines of each text doc
   for (filename in filenames) {
     if (is.null(linesnmax)){
       lins <- readr::read_lines(filename) 
@@ -46,10 +250,12 @@ getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL){
     dtread <- rbind(dtread, newdt)
   }
   dtread$file<-as.factor(dtread$file)
+  # Take sample of nsamp size from the read data 
   if (!is.null(nsamp)) dtread <- dtread[, .SD[sample(.N, nsamp)], by = file]
   return(dtread)
 }
 
+# This function converts the data table generated from getImportDt to a quanteda corpus
 dtToQcorp <- function(dtinput){
   docs <- NULL
   for (filename in levels(dtinput$file)){
@@ -63,42 +269,13 @@ dtToQcorp <- function(dtinput){
 }
 ```
 
-The "getImportDt" function imports the three text files from the dataset  into a data.table.
-
-```{r}
-setwd("C:/Users/amanafpour/Desktop/final/en_US")
-allLinesDt<- getImportDt(NULL, NULL)
-kable(table(allLinesDt$file),
-      align = "c",
-      caption = "Number of lines observed for each imported text file",
-      col.names = c("Text Doc", "Number of Lines"))
-
-```
-
-Based on the table above we can see there the twitter text file has a lot more lines than the news file followed by the blogs file. Considering the large size of these text files, a smaller subset of the data is required to further evaluate them.
-
-```{r}
-
-```
-
-which is then converted into a corpus using the quanteda package. The tm package was initially utilized for text processing/analysis but the switch to quanteda was made due to it's faster speed.
-
-It is worth noting, for testing purposes and due to RAM limitations, the first **`r format(linesnmax, scientific = F)`** lines were read from each input file and then only a small subset (**`r nsamp`** samples per input file) was selected with equal number of samples per input file to generate the corpora for analysis.
-
-# Data Cleaning
-
-The function defined below cleans the corpus. Profanity is removed but only the most explicit swear words. Removal of stopwords is left as an option for the function because we may want to include them in the prediction model.
-
-# Tokenization
-
-A custom function ngramTokenizer is defined for n-gram tokenization that is used in the DocumentTermMatrix control options. This custom function ensures that the corpora is first divided into individual sentences before tokenizing into words, in order to avoid tokenizing words from different sentences. The Get_Freq function summarizes all rows in the matrix into one vector and the getDoc_ByID function is defined if we want to extract a row from the corpus to evaluate independently.
-
-```{r tokenization-funcs}
-# Rewritten in quanteda
+```{r tokenization-funcs, echo=TRUE}
+# This function generates a document-feature matrix based on a quanteda corpus
+# To avoid tokenizing words from different sentences, first all lines are tokenized into sentences
 Get_qdfm <- function(qcorp, n = 1, removeStpwrds = F){
   sens <- unlist(lapply(tokenize_lines(as.String(qcorp)), tokenize_sentences),
                  use.names = F)
-  # Generate a list of explicitly profane words
+  # Generate a list of explicit swear words
   stpwrds <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
   if (removeStpwrds == T) stpwrds <- c(stpwrds, stopwords())
   # The tokenize_ngrams function automatically removes punct and extra whitespace
@@ -107,6 +284,8 @@ Get_qdfm <- function(qcorp, n = 1, removeStpwrds = F){
   dfm(as.tokens(list(ngrams)))
 }
 
+# This function generates an ordered term-frequency data table based on a quanteda dfm
+# The function combines all docs in dfm, info about individual docs is lost
 getOrderedFreqDt <- function(dfminput, spellCheck = T){
   dt <- data.table(convert(dfminput, "data.frame"))
   dt <- dt[,-c(1)] # remove first "document" column
@@ -117,40 +296,10 @@ getOrderedFreqDt <- function(dfminput, spellCheck = T){
     freqdt[, correctSpell := identical(wrongTerms[[1]], character(0)), by= 1:nrow(freqdt)]
     freqdt <- freqdt[correctSpell==T, c("term", "freq")]
   }
-  freqWordsDt[!grepl("[0-9]", term)] #removes all numbers from ngrams
+  freqdt[!grepl("[0-9]", term)] #removes all numbers from ngrams
   setorder(freqdt, -freq)
   return(freqdt)
 }
-```
-
-# Exploratory Data Analysis
-
-The document-term matrices and n-grams are further evaluated below for all three documents together and separately. A custom function is defined to plot different frequency vectors.
-
-```{r exploratory-analysis}
-setwd("C:/Users/amanafpour/Desktop/final/en_US")
-set.seed(34341)
-allLinesDt<- getImportDt(NULL, NULL)
-table(allLinesDt$file) # Determine number of lines per file
-
-# Evaluate subset of data
-importdt <- getImportDt()
-docs <- dtToQcorp(importdt)
-freqWordsDt <- getOrderedFreqDt(Get_qdfm(docs, n = 1, removeStpwrds = F), spellCheck = T)
-freqWordsDt_blogs <- getOrderedFreqDt(Get_qdfm(docs["en_US.blogs.txt"],
-                                               n = 1,
-                                               removeStpwrds = F),
-                                      spellCheck = T)
-freqWordsDt_news <- getOrderedFreqDt(Get_qdfm(docs["en_US.news.txt"],
-                                              n = 1,
-                                              removeStpwrds = F),
-                                     spellCheck = T)
-freqWordsDt_twitter <- getOrderedFreqDt(Get_qdfm(docs["en_US.twitter.txt"],
-                                                 n = 1,
-                                                 removeStpwrds = F),
-                                        spellCheck = T)
-freqBigramDt <- getOrderedFreqDt(Get_qdfm(docs, n = 2, removeStpwrds = F), spellCheck = T)
-freqTrigramDt <- getOrderedFreqDt(Get_qdfm(docs, n = 3, removeStpwrds = F), spellCheck = T)
 
 # Function for plotting terms vs occurrences
 plot_occurrences <- function(freqDt, nwords = 20){
@@ -162,55 +311,10 @@ plot_occurrences <- function(freqDt, nwords = 20){
     coord_flip() +
     scale_x_discrete(limits=wf$term)
 }
-
-# Plot occurrences of single words, 2-grams, and 3-grams
-plot_occurrences(freqWordsDt) +
-  ggtitle("Occurrences of top single words (excluding stopwords")
-plot_occurrences(freqWordsDt_blogs) +
-  ggtitle("Occurrences of top single words - Blogs")
-plot_occurrences(freqWordsDt_news) + 
-  ggtitle("Occurrences of top single words - News")
-plot_occurrences(freqWordsDt_twitter) + 
-  ggtitle("Occurrences of top single words - Twitter")
-plot_occurrences(freqBigramDt) + 
-  ggtitle("Occurrences of top 2-grams")
-plot_occurrences(freqTrigramDt,30) + 
-  ggtitle("Occurrences of top 3-grams")
-
-# Unique words required for 50% and 90% of all words
-freqWordsDt[,coverage:=cumsum(freq)/sum(freq)]
-plot(x = 1:nrow(freqWordsDt), y = freqWordsDt$coverage,
-     main = "Percent coverage of words",
-     xlab = "Number of words",
-     ylab = "Percent coverage (%)")
-nwords.5 = nrow(freqWordsDt[coverage>.5])
-nwords.9 = nrow(freqWordsDt[coverage>.9])
-
-# Determine if word is in the English dictionary
-indictionary <- hunspell_check(freqWordsDt$term)
-
-# Estimate how many lines were in English
-lang <- detect_language(importdt$lines)
-num_en <- table(lang)["en"]
-
-# Extract stems from words
-stem_doc <- stemDocument(freqWordsDt$term)
-stems <- unique(stem_doc)
 ```
 
-Based on the results above we observe that:
-
-- There a total of **`r nrow(freqWordsDt)`** unique words in the subset of this corpora
-- It's also interesting that the top word for news articles is **`r freqWordsDT_news$term[1]`** and the top 2 words for tweets are **`r freqWordsDT_twitter$term[1]`** and **`r freqWordsDT_twitter$term[2]`**
-- The top **`r nwords.5`** unique words cover 50% of all word instances and the top **`r nwords.9`** unique words cover 90% of all word instances
-- **`r sum(indictionary == F)`** of the words were not in the English dictionary
-- In addition, the cld3 package was used to evaluate each line from the dataset. **`r num_en`** of the **`r nrow(importdt$lines)`** total lines were detected to be English. However, the accuracy of the cld3 package functions would require further validation.
-- By stemming, the number of unique words can be reduced down to **`r length(stems)`** stem words
-
-# n-gram model development
-
-```{r predict-model-funcs}
-# define function that splits sentence
+```{r predict-model-funcs, echo=TRUE}
+# This function splits sentence by their last n number of words and is used in following funcs
 getSplitSent <- function(sen, nwrds){
   wrds <- unlist(strsplit(sen, split = " "))
   lastNwrds <- paste(tail(wrds,nwrds), collapse = " ")
@@ -218,6 +322,7 @@ getSplitSent <- function(sen, nwrds){
   c(remaining, lastNwrds)
 }
 
+# This function generates a list of freq/probabilitty matrices based on input quanteda corpus
 getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, coverage = 1.0) {
   freqList <- list()
   freqList[[1]] <- maxngram
@@ -241,6 +346,7 @@ getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, coverage = 1
   return(freqList)
 }
 
+# This function cleans and reformats an input sentences used to clean user input before predicting
 Clean_Str <- function(inputstr, removeStpwrds = F){
   corpus <- VCorpus(VectorSource(inputstr),
                        readerControl = list(reader=readPlain, language = "en"))
@@ -261,6 +367,7 @@ Clean_Str <- function(inputstr, removeStpwrds = F){
   return(corpus[[1]]$content)
 }
 
+# This function suggest the most probable words to the user based on their input phrase
 predictNxtWrd <- function(inputpmat, inputsent) {
   # determine starting n based on length of input sentence and maxngram in prob matrix
   numWrds <- length(strsplit(inputsent, split = " ")[[1]])
@@ -286,30 +393,12 @@ predictNxtWrd <- function(inputpmat, inputsent) {
 }
 ```
 
-
-```{r model-testing}
-setwd("C:/Users/amanafpour/Desktop/final/en_US")
-set.seed(34341)
-docsOrig <- dtToQcorp(getImportDt())
-
-pmat_n2_c1 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = 1.0)
-pmat_n3_c1 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = 1.0)
-pmat_n4_c1 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = 1.0)
-pmat_n2_c.9 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .9)
-pmat_n3_c.9 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .9)
-pmat_n4_c.9 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .9)
-pmat_n2_c.8 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .8)
-pmat_n3_c.8 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .8)
-pmat_n4_c.8 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .8)
-
-format(object.size(pmat), units = "auto")
-print(predictNxtWrd(pmat, "hello there"))
-```
-
-# Other code (for quizes)
-
-```{r}
-dftwitter <- df[which(df$file=="en_US.twitter.txt"),]
-dt = dftwitter$lines
-sum(grepl(pattern = "love", x = dt))
+```{r model-eval-funcs}
+calcPerplex <- function(testQcorp, trainpmat) {
+  # Generate all ngrams for test set
+  
+  # Search for term in trainpmat and update testpmat with probability values
+  
+  # For terms in testpmat with zero probability values, pretend one instance had been observed in the train set
+}
 ```
