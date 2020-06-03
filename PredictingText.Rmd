@@ -211,15 +211,18 @@ Going forward I intend to take the following steps to further evaluate and devel
 - Incorporate "smoothing" of probabilities for unobserved n-grams in the test data.
 
 ```{r model-testing, eval=FALSE}
-pmat_n2_c1 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = 1.0)
-pmat_n3_c1 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = 1.0)
-pmat_n4_c1 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = 1.0)
-pmat_n2_c.9 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .9)
-pmat_n3_c.9 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .9)
-pmat_n4_c.9 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .9)
-pmat_n2_c.8 <- getProbMatrix(docsOrig, maxngram = 2, bareMatOnly = T, coverage = .8)
-pmat_n3_c.8 <- getProbMatrix(docsOrig, maxngram = 3, bareMatOnly = T, coverage = .8)
-pmat_n4_c.8 <- getProbMatrix(docsOrig, maxngram = 4, bareMatOnly = T, coverage = .8)
+linesnmax = 5000
+nsamp = 100
+set.seed(34341)
+dtSubset <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
+docsOrig <- dtToQcorp(dtSubset)
+
+freqMat <- getFreqMatrix(docsOrig, maxngram = 3, coverage = 1.0)
+pmat <- getProbMatrix(freqMat)
+
+set.seed(8425)
+testSubset <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
+testDocs <- dtToQcorp(testSubset)
 
 format(object.size(pmat), units = "auto")
 print(predictNxtWrd(pmat, "hello there"))
@@ -272,12 +275,12 @@ dtToQcorp <- function(dtinput){
 ```{r tokenization-funcs, echo=TRUE}
 # This function generates a document-feature matrix based on a quanteda corpus
 # To avoid tokenizing words from different sentences, first all lines are tokenized into sentences
-Get_qdfm <- function(qcorp, n = 1, removeStpwrds = F){
+Get_qdfm <- function(qcorp, n = 1, removeStpwrds = F, addtlStpWrds = NULL){
   sens <- unlist(lapply(tokenize_lines(as.String(qcorp)), tokenize_sentences),
                  use.names = F)
   # Generate a list of explicit swear words
   stpwrds <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
-  if (removeStpwrds == T) stpwrds <- c(stpwrds, stopwords())
+  if (removeStpwrds == T) stpwrds <- c(stpwrds, stopwords(), addtlStpWrds)
   # The tokenize_ngrams function automatically removes punct and extra whitespace
   ngrams <- unlist(tokenize_ngrams(sens, n=n, lowercase = T, stopwords = stpwrds))
   ngrams <- ngrams[!is.na(ngrams)]
@@ -296,7 +299,7 @@ getOrderedFreqDt <- function(dfminput, spellCheck = T){
     freqdt[, correctSpell := identical(wrongTerms[[1]], character(0)), by= 1:nrow(freqdt)]
     freqdt <- freqdt[correctSpell==T, c("term", "freq")]
   }
-  freqdt[!grepl("[0-9]", term)] #removes all numbers from ngrams
+  freqdt <- freqdt[!grepl("[0-9]", term)] #removes all numbers from ngrams
   setorder(freqdt, -freq)
   return(freqdt)
 }
@@ -322,28 +325,42 @@ getSplitSent <- function(sen, nwrds){
   c(remaining, lastNwrds)
 }
 
-# This function generates a list of freq/probabilitty matrices based on input quanteda corpus
-getProbMatrix <- function(inputDocs, maxngram = 3, bareMatOnly = F, coverage = 1.0) {
+# This function generates a list of frequency matrices up to an maxngram
+getFreqMatrix <- function(inputDocs, maxngram = 3, coverage = 1.0) {
   freqList <- list()
-  freqList[[1]] <- maxngram
+  # Generate unigram separately first
+  dt <- getOrderedFreqDt(Get_qdfm(inputDocs, n=1), spellCheck = T)
+  if (coverage > 0.0 & coverage < 1.0) {
+    dt[,cumSumFreq:=cumsum(freq)]
+    # Select all extra words not required for specified coverage level
+    addtlStopWords <- dt[cumSumFreq > coverage*sum(freq)]$term
+    dt <- dt[sumFreq < coverage*sum(freq)]
+    dt <- dt[,-c("sumFreq")]
+  }
+  freqList[[1]] <- dt
+  
   # Convert frequency vectors into data tables and split words in ngram cols
   for (num in 2:maxngram){
-    dt <- getOrderedFreqDt(Get_qdfm(inputDocs, n=num), spellCheck = T)
-    if (coverage > 0.0 & coverage < 1.0) {
-      dt[,sumFreq:=cumsum(freq)]
-      dt <- dt[sumFreq<coverage*sum(freq)]
-      dt <- dt[,-c("sumFreq")]
-    }
+    dt <- getOrderedFreqDt(Get_qdfm(inputDocs, n=num, addtlStpWrds = addtlStopWords),
+                           spellCheck = T)
     dt[,remainingTerm := getSplitSent(term, 1)[1], by= 1:nrow(dt)]
     dt[,lastWrd := getSplitSent(term, 1)[2], by= 1:nrow(dt)]
     dt[,rTermFreq := sum(freq), by = .(remainingTerm)]
-    # Calculate probabilities and logs
-    dt[,p := freq / rTermFreq]
-    dt[,logp := log(p)]
-    if (bareMatOnly == T) dt[,c("term", "freq", "rTermFreq", "p"):=NULL]
     freqList[[num]] <- dt
   }
   return(freqList)
+}
+
+getProbMatrix <- function(inputFreqMat) {
+  pmat <- list()
+  pmat[[1]] <- inputFreqMat[[1]][, p:= freq/sum(freq)]
+  for (n in 2:length(inputFreqMat)){
+    # Calculate probabilities
+    dt <- inputFreqMat[[n]]
+    dt[,p := freq / rTermFreq]
+    pmat[[n]] <- dt
+  }
+  return(pmat)
 }
 
 # This function cleans and reformats an input sentences used to clean user input before predicting
@@ -371,7 +388,7 @@ Clean_Str <- function(inputstr, removeStpwrds = F){
 predictNxtWrd <- function(inputpmat, inputsent) {
   # determine starting n based on length of input sentence and maxngram in prob matrix
   numWrds <- length(strsplit(inputsent, split = " ")[[1]])
-  maxngram <- inputpmat[[1]]
+  maxngram <- length(inputpmat)
   n <- numWrds + 1
   if (n > maxngram) n <- maxngram
   # Use "Backoff" to determine probabilities
@@ -388,12 +405,40 @@ predictNxtWrd <- function(inputpmat, inputsent) {
   }
   
   #TODO: optimize so whole list doesn't have to be ordered just to get top words
-  setorderv(subpdt, c("logp"), c(-1))
+  setorderv(subpdt, c("p"))
   predictTop <- subpdt$lastWrd[1:5]
 }
 ```
 
 ```{r model-eval-funcs}
+# This scores function uses the stupid back off method
+getScoreMatrix <- function(trainProbMat, testDocs) {
+  nmax <- length(trainProbMat)
+  # Break testDocs into nmax size grams
+  ngramTestTermsDt <- getOrderedFreqDt(Get_qdfm(testDocs, n = nmax), spellCheck = T)
+  ngramTestTermsDt[, score:=numeric()]
+  for (row in 1:nrow(ngramTestTermsDt)) {
+    ngramTestTermsDt[row, score:=trainFreqdt[term == term]]
+    rowTerm <- ngramTestTermsDt$term[row]
+    for (n in nmax:2){
+      trainProbDt <- trainProbMat[[n]]
+      termProb <- trainProbDt[term == rowTerm, p]
+      if(is.na(trainProbDt))
+        ngramTestTermsDt$score[row] <- trainProbDt$p[term == rowTerm]
+    }
+  }
+  
+
+  
+  # Look for highest n-gram matches first
+  
+  # Add score column to trainFreqMat
+  
+  # Loop down to bigram multiplying score by 0.4 each time
+  
+  # For unigram, do +1 laplace smoothing for unseen words
+}
+
 calcPerplex <- function(testQcorp, trainpmat) {
   # Generate all ngrams for test set
   
