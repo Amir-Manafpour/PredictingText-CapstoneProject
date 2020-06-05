@@ -223,6 +223,16 @@ getScoreMatrix <- function(trainProbMat, testDocs) {
     testScoreDt <- testFreqMatrix[[n]]
     trainProbDt <- trainProbMat[[n]]
     testScoreDt[trainProbDt, s:= p, on = .(term)]
+    
+    # Get predictions
+    testScoreDt[, c("predict1", "predict2", "predict3") := predictNxtWrd(trainProbDt, remainingTerm),
+                by= 1:nrow(testScoreDt)]
+    
+    # Predict 1st word
+    testScoreDt[, correctPredict1 := (predict1 == lastWrd)]
+    testScoreDt[, correctPredict2 := (predict2 == lastWrd)]
+    testScoreDt[, correctPredict3 := (predict3 == lastWrd)]
+    
     testScoreMat[[n]] <- testScoreDt
   }
   
@@ -261,10 +271,15 @@ calcPerplex <- function(testScoreMat) {
 }
 
 #TODO: complete function below
-calcAccuracy <- function(trainProbMat, testDocs) {
-  nmax <- length(testScoreMat)
+calcAccuracy <- function(testScoreMat) {
+  nmax <- length(trainProbMat)
   # Predict word for each ngram in scores matrix and compare to actual last word
-
+  for (n in 2:nmax) {
+    
+  }
+  # Get prediction
+  
+  # Check with first word, 2nd wrd, 3rd wrd
 }
 
 
@@ -274,21 +289,21 @@ memory.limit(100000)
 ## ----model-testing, eval=FALSE---------------------------------------------------------------
 setwd("C:/Users/amanafpour/Desktop/final/en_US")
 linesnmax = 50000
-nsamp = 1000
+nsamp = 100
 set.seed(34341)
 trainDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
-# testDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp, skip = linesnmax * 2)
+testDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp, skip = linesnmax * 2)
 # 
-# trainCorp <- dtToQcorp(trainDt)
-# testCorp <- dtToQcorp(testDt)
+trainCorp <- dtToQcorp(trainDt)
+testCorp <- dtToQcorp(testDt)
 # 
-# trainFreqMat <- getFreqMatrix(trainCorp, maxngram = 3, coverage = 1.0)
+trainFreqMat <- getFreqMatrix(trainCorp, maxngram = 3, coverage = 1.0)
 # testFreqMat <- getFreqMatrix(testCorp, maxngram = 3, coverage = 1.0)
 # 
-# trainPmat <- getProbMatrix(trainFreqMat)
+trainPmat <- getProbMatrix(trainFreqMat)
 
-#testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
+testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
 #perplexv <- calcPerplex(testScoresMatrix)
 
 #format(object.size(pmat), units = "auto")
-print(predictNxtWrd(trainPmat, "hello there"))
+#print(predictNxtWrd(trainPmat, "hello there"))
