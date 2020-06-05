@@ -211,18 +211,24 @@ Going forward I intend to take the following steps to further evaluate and devel
 - Incorporate "smoothing" of probabilities for unobserved n-grams in the test data.
 
 ```{r model-testing, eval=FALSE}
-linesnmax = 5000
-nsamp = 100
+setwd("C:/Users/amanafpour/Desktop/final/en_US")
+linesnmax = 50000
+nsamp = 1000
 set.seed(34341)
-dtSubset <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
-docsOrig <- dtToQcorp(dtSubset)
+trainDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
+testDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp, skip = linesnmax * 2)
 
-freqMat <- getFreqMatrix(docsOrig, maxngram = 3, coverage = 1.0)
-pmat <- getProbMatrix(freqMat)
+trainCorp <- dtToQcorp(trainDt)
+testCorp <- dtToQcorp(testDt)
 
-set.seed(8425)
-testSubset <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
-testDocs <- dtToQcorp(testSubset)
+trainFreqMat <- getFreqMatrix(trainCorp, maxngram = 3, coverage = 1.0)
+testFreqMat <- getFreqMatrix(testCorp, maxngram = 3, coverage = 1.0)
+
+trainPmat <- getProbMatrix(trainFreqMat)
+trainPmat[[3]][,c("remainingTerm", "lastWrd", "rTermFreq"):=NULL]
+
+testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
+perplexv <- calcPerplex(testScoreMat)
 
 format(object.size(pmat), units = "auto")
 print(predictNxtWrd(pmat, "hello there"))
@@ -232,7 +238,7 @@ print(predictNxtWrd(pmat, "hello there"))
 
 ```{r data-import-funcs, echo=TRUE}
 # Function used to load text files in current directory as data.table
-getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL){
+getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL, skip = 0){
   # linesnmax and nsamp can take on NULL values which mean they are infinity in this function
   # If txtfilename is not defined, all files in current directory are read
   if (is.null(txtfilename)) {
@@ -247,7 +253,7 @@ getImportDt <- function(linesnmax = 50000, nsamp = 2000, txtfilename = NULL){
     if (is.null(linesnmax)){
       lins <- readr::read_lines(filename) 
     } else {
-      lins <- readr::read_lines(filename, n_max = linesnmax)
+      lins <- readr::read_lines(filename, n_max = linesnmax, skip = )
     }
     newdt <- data.table(file = filename, lines = lins)
     dtread <- rbind(dtread, newdt)
@@ -414,36 +420,59 @@ predictNxtWrd <- function(inputpmat, inputsent) {
 # This scores function uses the stupid back off method
 getScoreMatrix <- function(trainProbMat, testDocs) {
   nmax <- length(trainProbMat)
+  
   # Break testDocs into nmax size grams
-  ngramTestTermsDt <- getOrderedFreqDt(Get_qdfm(testDocs, n = nmax), spellCheck = T)
-  ngramTestTermsDt[, score:=numeric()]
-  for (row in 1:nrow(ngramTestTermsDt)) {
-    ngramTestTermsDt[row, score:=trainFreqdt[term == term]]
-    rowTerm <- ngramTestTermsDt$term[row]
-    for (n in nmax:2){
-      trainProbDt <- trainProbMat[[n]]
-      termProb <- trainProbDt[term == rowTerm, p]
-      if(is.na(trainProbDt))
-        ngramTestTermsDt$score[row] <- trainProbDt$p[term == rowTerm]
-    }
-  }
-  
-
-  
-  # Look for highest n-gram matches first
-  
-  # Add score column to trainFreqMat
-  
-  # Loop down to bigram multiplying score by 0.4 each time
+  testFreqMatrix <- getFreqMatrix(inputDocs = testDocs, maxngram = nmax, coverage = 1.0)
+  testScoreMat <- list()
   
   # For unigram, do +1 laplace smoothing for unseen words
+  testScoreDt <- testFreqMatrix[[1]]
+  testNRow <- nrow(testScoreDt)
+  trainProbDt <- trainProbMat[[1]]
+  trainSumFreq <- trainProbDt[,sum(freq)]
+  testScoreDt[trainProbDt, s := (i.freq + 1)/ (trainSumFreq + testNRow), on = .(term)]
+  testScoreDt[is.na(s), s := (1)/ (trainSumFreq + testNRow)]
+  testScoreMat[[1]] <- testScoreDt
+  
+  # Loop through remaining ngrams and update scores with available training probs
+  for (n in 2:nmax) {
+    testScoreDt <- testFreqMatrix[[n]]
+    trainProbDt <- trainProbMat[[n]]
+    testScoreDt[trainProbDt, s:= p, on = .(term)]
+    testScoreMat[[n]] <- testScoreDt
+  }
+  
+  # Populate remaining NA score values by backing off to lower ngram probs
+  fctr <- .4
+  for (n in nmax:2) {
+    testScoreDt <- testScoreMat[[n]]
+    # Split last nwords from term for next n-gram down
+    for (nextn in n-1 : 1) {
+      npower <- n - nextn
+      testScoreDt[, lastnwords := getSplitSent(term, nextn)[2],
+                  by = 1:nrow(testScoreDt)]
+      testScoreDtNextn <- testScoreMat[[nextn]]
+      # Duplicate term col as lastnwords so it can be joined
+      testScoreDtNextn[, lastnwords := term]
+      testScoreDt[testScoreDtNextn,
+                  s := ifelse(is.na(s), fctr ^ npower * i.s, s),
+                  on = "lastnwords"]
+      testScoreMat[[n]] <- testScoreDt
+    }
+  }
+  return(testScoreMat)
 }
 
-calcPerplex <- function(testQcorp, trainpmat) {
-  # Generate all ngrams for test set
-  
-  # Search for term in trainpmat and update testpmat with probability values
-  
-  # For terms in testpmat with zero probability values, pretend one instance had been observed in the train set
+calcPerplex <- function(testScoreMat) {
+  nmax <- length(testScoreMat)
+  perplex <- numeric()
+  for(n in 1:nmax) {
+    testScoreDt <- testScoreMat[[n]]
+    freqsum <- testScoreDt[, sum(freq)]
+    testScoreDt[, slog := log(s)]
+    slogsums <- testScoreDt[, sum(slog * freq)]
+    perplex[n] <- exp(slogsums * (-1/freqsum))
+  }
+  return(perplex)
 }
 ```
