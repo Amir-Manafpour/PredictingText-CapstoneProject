@@ -128,8 +128,7 @@ getFreqMatrix <- function(inputDocs, maxngram = 3, coverage = 1.0) {
   for (num in 2:maxngram){
     dt <- getOrderedFreqDt(Get_qdfm(inputDocs, n=num, addtlStpWrds = addtlStopWords),
                            spellCheck = T)
-    dt[,remainingTerm := getSplitSent(term, 1)[1], by= 1:nrow(dt)]
-    dt[,lastWrd := getSplitSent(term, 1)[2], by= 1:nrow(dt)]
+    dt[,c("remainingTerm", "lastWrd") := as.list(getSplitSent(term, 1)), by= 1:nrow(dt)]
     dt[,rTermFreq := sum(freq), by = .(remainingTerm)]
     freqList[[num]] <- dt
   }
@@ -157,7 +156,6 @@ Clean_Str <- function(inputstr, removeStpwrds = F){
   # Remove numbers
   corpus <- tm_map(corpus, removeNumbers)
   # Remove explicitly profane words
-  profanity <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
   corpus <- tm_map(corpus, removeWords, profanity)
   # Remove extra whitespace BUT maintain \n line breaks
   whitespaceFUN <- content_transformer(function(x) gsub("[ ]+", " ",as.String(x)))
@@ -171,29 +169,29 @@ Clean_Str <- function(inputstr, removeStpwrds = F){
 
 # This function suggest the most probable words to the user based on their input phrase
 predictNxtWrd <- function(inputpmat, inputsent) {
-  # determine starting n based on length of input sentence and maxngram in prob matrix
   predictTop <- character()
+  # format input sentence
+  inputsent <- Clean_Str(inputsent)
+  # determine starting n based on length of input sentence and maxngram in prob matrix
   numWrds <- length(strsplit(inputsent, split = " ")[[1]])
   maxngram <- length(inputpmat)
   n <- numWrds + 1
   if (n > maxngram) n <- maxngram
   # Use "Backoff" to determine suggested words
   for (i in n:2){
-    lastNWrds_str <- getSplitSent(inputsent, i - 1)[2]
-    # format input sentence
-    lastNWrds_str <- Clean_Str(lastNWrds_str)
+    lastNWrds_str <- paste(tail(unlist(strsplit(inputsent, " ")), i - 1), collapse = " ")
     # select corresponding ngram matrix
     pdt <- inputpmat[[i]]
     subpdt <- pdt[remainingTerm == lastNWrds_str]
-    setorderv(subpdt, c("p"))
-    predictTop <- c(predictTop,subpdt$lastWrd)
+    setorder(subpdt, -p)
+    predictTop <- c(predictTop,subpdt$lastWrd[1:3])
     # if 3 or less matches found then use next ngram down, otherwise break loop
     if (sum(is.na(predictTop[1:3])) == 0) break
   }
   # If still suggesting less than 3 words, fill in with unigram predictions
   if (sum(is.na(predictTop[1:3])) != 0) {
-    pdt <- inputpmat[1]
-    setorderv(pdt, c("p"))
+    pdt <- inputpmat[[1]]
+    setorder(pdt, -p)
     predictTop <- c(predictTop,pdt$term[1:3])
   }
   return(predictTop[1:3])
@@ -224,15 +222,12 @@ getScoreMatrix <- function(trainProbMat, testDocs) {
     trainProbDt <- trainProbMat[[n]]
     testScoreDt[trainProbDt, s:= p, on = .(term)]
     
+    #TODO: calculating correct predictions below is too time consuming. Figure out another way
     # Get predictions
-    testScoreDt[, c("predict1", "predict2", "predict3") := predictNxtWrd(trainProbDt, remainingTerm),
-                by= 1:nrow(testScoreDt)]
-    
-    # Predict 1st word
-    testScoreDt[, correctPredict1 := (predict1 == lastWrd)]
-    testScoreDt[, correctPredict2 := (predict2 == lastWrd)]
-    testScoreDt[, correctPredict3 := (predict3 == lastWrd)]
-    
+    # testScoreDt[, c("correctPredict1", "correctPredict2", "correctPredict3") :=
+    #               as.list(predictNxtWrd(trainProbMat, remainingTerm) == lastWrd),
+    #             by= 1:nrow(testScoreDt)]
+
     testScoreMat[[n]] <- testScoreDt
   }
   
@@ -243,7 +238,8 @@ getScoreMatrix <- function(trainProbMat, testDocs) {
     # Split last nwords from term for next n-gram down
     for (nextn in (n-1):1) {
       npower <- n - nextn
-      testScoreDt[, lastnwords := getSplitSent(term, nextn)[2],
+      testScoreDt[, lastnwords := paste(tail(unlist(strsplit(term, " ")), nextn),
+                                        collapse = " "),
                   by = 1:nrow(testScoreDt)]
       testScoreDtNextn <- testScoreMat[[nextn]]
       # Duplicate term col as lastnwords so it can be joined
@@ -287,23 +283,31 @@ calcAccuracy <- function(testScoreMat) {
 memory.limit(100000)
 
 ## ----model-testing, eval=FALSE---------------------------------------------------------------
+profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
+
 setwd("C:/Users/amanafpour/Desktop/final/en_US")
 linesnmax = 50000
-nsamp = 100
+nsamp = 3000
 set.seed(34341)
 trainDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
 testDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp, skip = linesnmax * 2)
-# 
+
 trainCorp <- dtToQcorp(trainDt)
 testCorp <- dtToQcorp(testDt)
-# 
+
 trainFreqMat <- getFreqMatrix(trainCorp, maxngram = 3, coverage = 1.0)
 # testFreqMat <- getFreqMatrix(testCorp, maxngram = 3, coverage = 1.0)
-# 
+
 trainPmat <- getProbMatrix(trainFreqMat)
 
 testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
-#perplexv <- calcPerplex(testScoresMatrix)
+perplexv <- calcPerplex(testScoresMatrix)
 
 #format(object.size(pmat), units = "auto")
 #print(predictNxtWrd(trainPmat, "hello there"))
+
+# Rprof(tmp <- tempfile(), interval = .02)
+# testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
+# Rprof(NULL)
+# summaryRprof(tmp)
+# unlink(tmp)
