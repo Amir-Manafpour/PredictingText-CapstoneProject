@@ -65,7 +65,8 @@ Get_qdfm <- function(qcorp, n = 1, removeStpwrds = F, addtlStpWrds = NULL){
                  use.names = F)
   # Generate a list of explicit swear words
   stpwrds <- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
-  if (removeStpwrds == T) stpwrds <- c(stpwrds, stopwords(), addtlStpWrds)
+  stpwrds <- c(stpwrds, addtlStpWrds)
+  if (removeStpwrds == T) stpwrds <- c(stpwrds, stopwords())
   # The tokenize_ngrams function automatically removes punct and extra whitespace
   ngrams <- unlist(tokenize_ngrams(sens, n=n, lowercase = T, stopwords = stpwrds))
   ngrams <- ngrams[!is.na(ngrams)]
@@ -113,14 +114,15 @@ getSplitSent <- function(sen, nwrds){
 # This function generates a list of frequency matrices up to an maxngram
 getFreqMatrix <- function(inputDocs, maxngram = 3, coverage = 1.0) {
   freqList <- list()
+  addtlStopWords <- NULL
   # Generate unigram separately first
   dt <- getOrderedFreqDt(Get_qdfm(inputDocs, n=1), spellCheck = T)
   if (coverage > 0.0 & coverage < 1.0) {
     dt[,cumSumFreq:=cumsum(freq)]
     # Select all extra words not required for specified coverage level
     addtlStopWords <- dt[cumSumFreq > coverage*sum(freq)]$term
-    dt <- dt[sumFreq < coverage*sum(freq)]
-    dt <- dt[,-c("sumFreq")]
+    dt <- dt[cumSumFreq < coverage*sum(freq)]
+    dt <- dt[,-c("cumSumFreq")]
   }
   freqList[[1]] <- dt
   
@@ -247,6 +249,7 @@ getScoreMatrix <- function(trainProbMat, testDocs) {
       testScoreDt[testScoreDtNextn,
                   s := ifelse(is.na(s), fctr ^ npower * i.s, s),
                   on = "lastnwords"]
+      testScoreDt[,lastnwords := NULL]
       testScoreMat[[n]] <- testScoreDt
     }
   }
@@ -259,23 +262,36 @@ calcPerplex <- function(testScoreMat) {
   for(n in 1:nmax) {
     testScoreDt <- testScoreMat[[n]]
     freqsum <- testScoreDt[, sum(freq)]
-    testScoreDt[, slog := log(s)]
-    slogsums <- testScoreDt[, sum(slog * freq)]
+    slogsums <- testScoreDt[, sum(log(s) * freq)]
     perplex[n] <- exp(slogsums * (-1/freqsum))
   }
   return(perplex)
 }
 
-#TODO: complete function below
-calcAccuracy <- function(testScoreMat) {
-  nmax <- length(trainProbMat)
+getAccMat <- function(testScoreMat) {
+  accMat <- list()
+  nmax <- length(testScoreMat)
   # Predict word for each ngram in scores matrix and compare to actual last word
   for (n in 2:nmax) {
+    testScoreDt <- testScoreMat[[n]]
+    # Remove variables not required
+    testScoreDt[,c("term", "rTermFreq") := NULL]
+    # Try a non-loop way of updating 1st word correct
+    testScoreDt[,correctwrd1 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
+    testScoreDt[,c("correctwrd2", "correctwrd3") := FALSE]
+    testScoreDt[correctwrd1 == FALSE,
+                correctwrd2 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
+    testScoreDt[correctwrd1 == FALSE & correctwrd2 == FALSE,
+                correctwrd3 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
     
+    # return vector of total correct predictions
+    accVec <- c(testScoreDt[,sum(correctwrd1*freq)/sum(freq)],
+                     testScoreDt[,sum(correctwrd2*freq)/sum(freq)],
+                     testScoreDt[,sum(correctwrd3*freq)/sum(freq)])
+    names(accVec) <- c("acc1stwrd", "acc2ndwrd", "acc3rdwrd")
+    accMat[[n]] <- accVec
   }
-  # Get prediction
-  
-  # Check with first word, 2nd wrd, 3rd wrd
+  return(accMat)
 }
 
 
@@ -287,27 +303,33 @@ profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", wa
 
 setwd("C:/Users/amanafpour/Desktop/final/en_US")
 linesnmax = 50000
-nsamp = 3000
+trainnsamp = 1000
+testnsamp = 100
+cover = 1.0
+maximumngrams = 3
+
 set.seed(34341)
-trainDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp)
-testDt <- getImportDt(linesnmax = linesnmax, nsamp = nsamp, skip = linesnmax * 2)
+trainDt <- getImportDt(linesnmax = linesnmax, nsamp = trainnsamp)
+testDt <- getImportDt(linesnmax = linesnmax, nsamp = testnsamp, skip = linesnmax)
 
 trainCorp <- dtToQcorp(trainDt)
 testCorp <- dtToQcorp(testDt)
 
-trainFreqMat <- getFreqMatrix(trainCorp, maxngram = 3, coverage = 1.0)
-# testFreqMat <- getFreqMatrix(testCorp, maxngram = 3, coverage = 1.0)
+trainFreqMat <- getFreqMatrix(trainCorp, maxngram = maximumngrams, coverage = cover)
 
 trainPmat <- getProbMatrix(trainFreqMat)
 
-testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
-perplexv <- calcPerplex(testScoresMatrix)
+testScoreMat <- getScoreMatrix(trainPmat, testCorp)
+
+perplexv <- calcPerplex(testScoreMat)
+
+accMat <- getAccMat(testScoreMat)
 
 #format(object.size(pmat), units = "auto")
 #print(predictNxtWrd(trainPmat, "hello there"))
 
 # Rprof(tmp <- tempfile(), interval = .02)
-# testScoresMatrix <- getScoreMatrix(trainPmat, testCorp)
+# accMat <- getAccMat(testScoreMat)
 # Rprof(NULL)
 # summaryRprof(tmp)
 # unlink(tmp)
