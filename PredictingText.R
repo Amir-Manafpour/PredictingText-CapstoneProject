@@ -171,123 +171,152 @@ Clean_Str <- function(inputstr, removeStpwrds = F){
 }
 
 # This function suggest the most probable words to the user based on their input phrase
-predictNxtWrd <- function(inputpmat, inputsent, cleanstring = T) {
+predictNxtWrd <- function(inputsent, returnScores = F) {
   # TODO: spell check the input and replace misspelled words with top suggested word before analyzing
-  predictTop <- character()
   # format input sentence
-  if(cleanstring == T) inputsent <- Clean_Str(inputsent)
+  inputsent <- Clean_Str(inputsent)
   # determine starting n based on length of input sentence and maxngram in prob matrix
   numWrds <- length(strsplit(inputsent, split = " ")[[1]])
   maxngram <- length(inputpmat)
   n <- numWrds + 1
   if (n > maxngram) n <- maxngram
   # Use "Backoff" to determine suggested words
-  for (i in n:2){
+  predictedWordsDt <- data.table(predictedWord = character(), score = numeric())
+  fact <- 1.0
+  for (i in n:1){
+    if (n == 1 & nrow(predictedWordsDt) > 3) break # only use unigram if less than 3 words
     lastNWrds_str <- paste(tail(unlist(strsplit(inputsent, " ")), i - 1), collapse = " ")
     # select corresponding ngram matrix
     pdt <- inputpmat[[i]]
     subpdt <- pdt[remainingTerm == lastNWrds_str]
-    setorder(subpdt, -p)
-    predictTop <- c(predictTop,subpdt$lastWrd[1:3])
-    # if 3 or less matches found then use next ngram down, otherwise break loop
-    if (sum(is.na(predictTop[1:3])) == 0) break
+    predictedWordsDt <- rbind(predictedWordsDt,
+                              data.table(predictedWord = subpdt$lastWrd, score = fact * subpdt$p))
+    fact <- fact * 0.4 # stupid backoff factor
   }
-  # If still suggesting less than 3 words, fill in with unigram predictions
-  if (sum(is.na(predictTop[1:3])) != 0) {
-    pdt <- inputpmat[[1]]
-    setorder(pdt, -p)
-    predictTop <- c(predictTop,pdt$term[1:3])
-  }
-  return(predictTop[1:3])
+  # order the data table and return it
+  setorderv(predictedWordsDt, order = -1)
+  if (returnScores==F) return(predictedWordsDt$predictedWord[1:3])
+  return(predictedWordsDt[1:3])
 }
+
+# This function suggest the most probable words to the user based on their input phrase
+# predictNxtWrdOLD <- function(inputpmat, inputsent, cleanstring = T) {
+#   # TODO: spell check the input and replace misspelled words with top suggested word before analyzing
+#   predictTop <- character()
+#   # format input sentence
+#   if(cleanstring == T) inputsent <- Clean_Str(inputsent)
+#   # determine starting n based on length of input sentence and maxngram in prob matrix
+#   numWrds <- length(strsplit(inputsent, split = " ")[[1]])
+#   maxngram <- length(inputpmat)
+#   n <- numWrds + 1
+#   if (n > maxngram) n <- maxngram
+#   # Use "Backoff" to determine suggested words
+#   for (i in n:2){
+#     lastNWrds_str <- paste(tail(unlist(strsplit(inputsent, " ")), i - 1), collapse = " ")
+#     # select corresponding ngram matrix
+#     pdt <- inputpmat[[i]]
+#     subpdt <- pdt[remainingTerm == lastNWrds_str]
+#     setorder(subpdt, -p)
+#     predictTop <- c(predictTop,subpdt$lastWrd[1:3])
+#     # if 3 or less matches found then use next ngram down, otherwise break loop
+#     if (sum(is.na(predictTop[1:3])) == 0) break
+#   }
+#   # If still suggesting less than 3 words, fill in with unigram predictions
+#   if (sum(is.na(predictTop[1:3])) != 0) {
+#     pdt <- inputpmat[[1]]
+#     setorder(pdt, -p)
+#     predictTop <- c(predictTop,pdt$term[1:3])
+#   }
+#   return(predictTop[1:3])
+# }
 
 
 ## ----model-eval-funcs------------------------------------------------------------------------
 # This function uses the stupid back off method to calculate score for each ngram
-getScoreMatrix <- function(trainProbMat, testDocs, smoothing = TRUE) {
-  nmax <- length(trainProbMat)
-  
-  # Break testDocs into nmax size grams
-  testFreqMatrix <- getFreqMatrix(inputDocs = testDocs, maxngram = nmax, coverage = 1.0)
-  testScoreMat <- list()
-  
-  # For unigram, do +1 laplace smoothing for unseen words
-  testScoreDt <- testFreqMatrix[[1]]
-  testNRow <- nrow(testScoreDt)
-  trainProbDt <- trainProbMat[[1]]
-  trainSumFreq <- trainProbDt[,sum(freq)]
-  if (smoothing == T) {
-    testScoreDt[trainProbDt, s := (i.freq + 1)/ (trainSumFreq + testNRow), on = .(term)]
-    testScoreDt[is.na(s), s := (1)/ (trainSumFreq + testNRow)]
-  } else {
-    testScoreDt[trainProbDt, s := p, on = .(term)]
-    testScoreDt[is.na(s), s := 0]
-  }
-  testScoreMat[[1]] <- testScoreDt
-  
-  # Loop through remaining ngrams and update scores with available training probs
-  for (n in 2:nmax) {
-    testScoreDt <- testFreqMatrix[[n]]
-    trainProbDt <- trainProbMat[[n]]
-    testScoreDt[trainProbDt, s:= p, on = .(term)]
-    testScoreMat[[n]] <- testScoreDt
-  }
-  
-  # Populate remaining NA score values by backing off to lower ngram probs
-  fctr <- .4
-  for (n in nmax:2) {
-    testScoreDt <- testScoreMat[[n]]
-    # Split last nwords from term for next n-gram down
-    for (nextn in (n-1):1) {
-      npower <- n - nextn
-      testScoreDt[, lastnwords := paste(tail(unlist(strsplit(term, " ")), nextn),
-                                        collapse = " "),
-                  by = 1:nrow(testScoreDt)]
-      testScoreDtNextn <- testScoreMat[[nextn]]
-      # Duplicate term col as lastnwords so it can be joined
-      testScoreDtNextn[, lastnwords := term]
-      testScoreDt[testScoreDtNextn,
-                  s := ifelse(is.na(s), fctr ^ npower * i.s, s),
-                  on = "lastnwords"]
-      testScoreDt[,lastnwords := NULL]
-      testScoreMat[[n]] <- testScoreDt
-    }
-  }
-  return(testScoreMat)
-}
-
-calcPerplex <- function(testScoreMat) {
-  nmax <- length(testScoreMat)
-  perplex <- numeric()
-  for(n in 1:nmax) {
-    testScoreDt <- testScoreMat[[n]]
-    freqsum <- testScoreDt[, sum(freq)]
-    slogsums <- testScoreDt[, sum(log(s) * freq)]
-    perplex[n] <- exp(slogsums * (-1/freqsum))
-  }
-  return(perplex)
-}
-
-# getAccMat-UNUSED <- function(testScoreMat) {
+# getScoreMatrix <- function(trainProbMat, testDocs, smoothing = TRUE) {
+#   nmax <- length(trainProbMat)
+#   
+#   # Break testDocs into nmax size grams
+#   testFreqMatrix <- getFreqMatrix(inputDocs = testDocs, maxngram = nmax, coverage = 1.0)
+#   testScoreMat <- list()
+#   
+#   # For unigram, do +1 laplace smoothing for unseen words
+#   testScoreDt <- testFreqMatrix[[1]]
+#   testNRow <- nrow(testScoreDt)
+#   trainProbDt <- trainProbMat[[1]]
+#   trainSumFreq <- trainProbDt[,sum(freq)]
+#   if (smoothing == T) {
+#     testScoreDt[trainProbDt, s := (i.freq + 1)/ (trainSumFreq + testNRow), on = .(term)]
+#     testScoreDt[is.na(s), s := (1)/ (trainSumFreq + testNRow)]
+#     
+#   } else {
+#     testScoreDt[trainProbDt, s := p, on = .(term)]
+#     testScoreDt[is.na(s), s := 0]
+#   }
+#   testScoreMat[[1]] <- testScoreDt
+#   
+#   # Loop through remaining ngrams and update scores with available training probs
+#   for (n in 2:nmax) {
+#     testScoreDt <- testFreqMatrix[[n]]
+#     trainProbDt <- trainProbMat[[n]]
+#     testScoreDt[trainProbDt, s:= p, on = .(term)]
+#     testScoreMat[[n]] <- testScoreDt
+#   }
+#   
+#   # Populate remaining NA score values by backing off to lower ngram probs
+#   fctr <- .4
+#   for (n in nmax:2) {
+#     testScoreDt <- testScoreMat[[n]]
+#     # Split last nwords from term for next n-gram down
+#     for (nextn in (n-1):1) {
+#       npower <- n - nextn
+#       testScoreDt[, lastnwords := paste(tail(unlist(strsplit(term, " ")), nextn),
+#                                         collapse = " "),
+#                   by = 1:nrow(testScoreDt)]
+#       testScoreDtNextn <- testScoreMat[[nextn]]
+#       # Duplicate term col as lastnwords so it can be joined
+#       testScoreDtNextn[, lastnwords := term]
+#       testScoreDt[testScoreDtNextn,
+#                   s := ifelse(is.na(s), fctr ^ npower * i.s, s),
+#                   on = "lastnwords"]
+#       testScoreDt[,lastnwords := NULL]
+#       testScoreMat[[n]] <- testScoreDt
+#     }
+#   }
+#   return(testScoreMat)
+# }
+# 
+# calcPerplex <- function(testScoreMat) {
+#   nmax <- length(testScoreMat)
+#   perplex <- numeric()
+#   for(n in 1:nmax) {
+#     testScoreDt <- testScoreMat[[n]]
+#     freqsum <- testScoreDt[, sum(freq)]
+#     slogsums <- testScoreDt[, sum(log(s) * freq)]
+#     perplex[n] <- exp(slogsums * (-1/freqsum))
+#   }
+#   return(perplex)
+# }
+# 
+# getAccMat <- function(trainProbMat, testScoreMat) {
 #   accMat <- list()
 #   nmax <- length(testScoreMat)
 #   # Predict word for each ngram in scores matrix and compare to actual last word
 #   for (n in 2:nmax) {
 #     testScoreDt <- testScoreMat[[n]]
 #     # Remove variables not required
-#     testScoreDt[,c("term", "rTermFreq") := NULL]
+#     testScoreDt[,c("term", "rTermFreq", "s") := NULL]
 #     # Try a non-loop way of updating 1st word correct
-#     testScoreDt[,c("correctwrd1","correctwrd2", "correctwrd3") := FALSE]
-#     testScoreDt[s!=0, correctwrd1 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
-#     testScoreDt[s!=0 & correctwrd1 == FALSE,
-#                 correctwrd2 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
-#     testScoreDt[s!=0 & correctwrd1 == FALSE & correctwrd2 == FALSE,
-#                 correctwrd3 := lastWrd == .SD[which.max(s), lastWrd], by = remainingTerm]
-#     
+#     testScoreDt[, c("correctwrd1","correctwrd2", "correctwrd3") :=
+#                   as.list(predictNxtWrd(trainProbMat, remainingTerm, cleanstring = F) == lastWrd),
+#                 by = 1:nrow(testScoreDt)]
+#     testScoreDt[is.na(correctwrd1), correctwrd1 := FALSE]
+#     testScoreDt[is.na(correctwrd2), correctwrd2 := FALSE]
+#     testScoreDt[is.na(correctwrd3), correctwrd3 := FALSE]
 #     # return vector of total correct predictions
 #     accVec <- c(testScoreDt[,sum(correctwrd1*freq)/sum(freq)],
-#                      testScoreDt[,sum(correctwrd2*freq)/sum(freq)],
-#                      testScoreDt[,sum(correctwrd3*freq)/sum(freq)])
+#                 testScoreDt[,sum(correctwrd2*freq)/sum(freq)],
+#                 testScoreDt[,sum(correctwrd3*freq)/sum(freq)])
 #     names(accVec) <- c("acc1stwrd", "acc2ndwrd", "acc3rdwrd")
 #     accMat[[n]] <- accVec
 #   }
@@ -295,35 +324,11 @@ calcPerplex <- function(testScoreMat) {
 # }
 
 
-getAccMat <- function(trainProbMat, testScoreMat) {
-  accMat <- list()
-  nmax <- length(testScoreMat)
-  # Predict word for each ngram in scores matrix and compare to actual last word
-  for (n in 2:nmax) {
-    testScoreDt <- testScoreMat[[n]]
-    # Remove variables not required
-    testScoreDt[,c("term", "rTermFreq") := NULL]
-    # Try a non-loop way of updating 1st word correct
-    testScoreDt[, c("correctwrd1","correctwrd2", "correctwrd3") :=
-                  as.list(predictNxtWrd(trainProbMat, remainingTerm, cleanstring = F) == lastWrd),
-                by = 1:nrow(testScoreDt)]
-    
-    # return vector of total correct predictions
-    accVec <- c(testScoreDt[,sum(correctwrd1*freq)/sum(freq)],
-                testScoreDt[,sum(correctwrd2*freq)/sum(freq)],
-                testScoreDt[,sum(correctwrd3*freq)/sum(freq)])
-    names(accVec) <- c("acc1stwrd", "acc2ndwrd", "acc3rdwrd")
-    accMat[[n]] <- accVec
-  }
-  return(accMat)
-}
-
-
 
 memory.limit(100000)
 
 ## ----model-testing, eval=FALSE---------------------------------------------------------------
-# profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
+profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
 # 
 # setwd("C:/Users/amanafpour/Desktop/final/en_US")
 # linesnmax = 500000
@@ -347,26 +352,35 @@ memory.limit(100000)
 # saveRDS(testDt, file = paste("testDt", testnsamp, "lines.RDS", sep=""))
 
 setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
-testDt <- readRDS("testDt1000lines.RDS")
-testCorp <- dtToQcorp(testDt)
+profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
 
+# Read input mat from directory
+inputpmat <<- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
+
+predictNxtWrd("hello there")
+
+
+
+
+
+# testDt <- readRDS("testDt1000lines.RDS")
+# testCorp <- dtToQcorp(testDt)
+# 
 # trainPmatFilenames <- c("10000lines_5gram_0.5cover",
 #                         "10000lines_5gram_0.8cover",
 #                         "10000lines_5gram_1cover")
+#  
+# # Test out this section below
+# accMatList <- list()
+# for (filesuffix in trainPmatFilenames){
+#   trainPmat <- readRDS(paste("trainPmat",filesuffix,".RDS",sep = ""))
+#   testScoreMatrix <- getScoreMatrix(trainPmat, testCorp, smoothing = F)
+#   timerun <- system.time(accMat <- getAccMat(trainPmat, testScoreMatrix))
+#   accMatList[[filesuffix]] <- accMat
+# }
+# 
+# saveRDS(accMatList, file = paste("accMatList_1000testlines_","10000lines_5gram",".RDS", sep= ""))
 
-trainPmatFilenames <- c("10000lines_3gram_1cover")
-
-# Test out this section below
-accMatList <- list()
-for (filesuffix in trainPmatFilenames){
-  trainPmat <- readRDS(paste("trainPmat",filesuffix,".RDS",sep = ""))
-  testScoreMatrix <- getScoreMatrix(trainPmat, testCorp, smoothing = F)
-  timerun <- system.time(accMat <- getAccMat(trainPmat, testScoreMatrix))
-  accMatList[[filesuffix]] <- accMat
-}
-
-# saveRDS(accMatList, file = "accMatList_1000testlines_10000trainlines_5grams.RDS")
- 
 # perplexvList <- list()
 # for (filesuffix in trainPmatFilenames){
 #   trainPmat <- readRDS(paste("trainPmat",filesuffix,".RDS",sep = ""))
