@@ -138,15 +138,18 @@ getFreqMatrix <- function(inputDocs, maxngram = 3, coverage = 1.0) {
   return(freqList)
 }
 
-getProbMatrix <- function(inputFreqMat) {
+getProbMatrix <- function(inputFreqMat, bareMat = F) {
   pmat <- list()
   pmat[[1]] <- inputFreqMat[[1]][, p:= freq/sum(freq)]
+  if (bareMat == T) pmat[[1]] <- pmat[[1]][,c("term", "p")]
   for (n in 2:length(inputFreqMat)){
     # Calculate probabilities
     dt <- inputFreqMat[[n]]
     dt[,p := freq / rTermFreq]
+    if (bareMat == T) dt <- dt[, c("remainingTerm", "lastWrd", "p")]
     pmat[[n]] <- dt
   }
+  
   return(pmat)
 }
 
@@ -181,20 +184,36 @@ predictNxtWrd <- function(inputsent, returnScores = F) {
   n <- numWrds + 1
   if (n > maxngram) n <- maxngram
   # Use "Backoff" to determine suggested words
-  predictedWordsDt <- data.table(predictedWord = character(), score = numeric())
+  predictedWordsDt <- data.table(predictedWord = character(),
+                                 score = numeric(),
+                                 ngram = numeric())
   fact <- 1.0
   for (i in n:1){
-    if (n == 1 & nrow(predictedWordsDt) > 3) break # only use unigram if less than 3 words
+    if (i == 1) {
+      # only use unigram if less than 3 words
+      if (nrow(predictedWordsDt) < 3) { 
+        pdt <- inputpmat[[1]]
+        predictedWordsDt <- rbind(predictedWordsDt,
+                                  data.table(predictedWord = pdt$term,
+                                             score = fact * pdt$p,
+                                             ngram = 1))
+      } 
+      break
+    } 
     lastNWrds_str <- paste(tail(unlist(strsplit(inputsent, " ")), i - 1), collapse = " ")
     # select corresponding ngram matrix
     pdt <- inputpmat[[i]]
     subpdt <- pdt[remainingTerm == lastNWrds_str]
     predictedWordsDt <- rbind(predictedWordsDt,
-                              data.table(predictedWord = subpdt$lastWrd, score = fact * subpdt$p))
+                              data.table(predictedWord = subpdt$lastWrd,
+                                         score = fact * subpdt$p,
+                                         ngram = i))
     fact <- fact * 0.4 # stupid backoff factor
   }
   # order the data table and return it
-  setorderv(predictedWordsDt, order = -1)
+  setorderv(predictedWordsDt, cols = c("score"), order = -1, na.last = T)
+  # remove duplicates
+  predictedWordsDt <- unique(predictedWordsDt, by = c("predictedWord"))
   if (returnScores==F) return(predictedWordsDt$predictedWord[1:3])
   return(predictedWordsDt[1:3])
 }
@@ -328,7 +347,7 @@ predictNxtWrd <- function(inputsent, returnScores = F) {
 memory.limit(100000)
 
 ## ----model-testing, eval=FALSE---------------------------------------------------------------
-profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
+# profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
 # 
 # setwd("C:/Users/amanafpour/Desktop/final/en_US")
 # linesnmax = 500000
