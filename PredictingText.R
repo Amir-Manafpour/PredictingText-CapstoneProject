@@ -374,13 +374,19 @@ setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved
 profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
 
 # Read input mat from directory
-inputpmat <<- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
+inputpmat_orig <<- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
+inputpmat <- inputpmat_orig
 
-predictNxtWrd("hello there")
+# Run benchmark on all ngrams
+bmlist <- list()
+for (n in 2:5){
+  inputpmat <<- inputpmat_orig[2:n]
+  bmlist[n] <- benchmark(predictNxtWrd,
+                         sent.list = list('tweets' = tweets, 
+                                          'blogs' = blogs))
+}
 
-
-
-
+saveRDS(bmlist, file = paste("bmresults_1000testlines_","10000lines_5gram",".RDS", sep= ""))
 
 # testDt <- readRDS("testDt1000lines.RDS")
 # testCorp <- dtToQcorp(testDt)
