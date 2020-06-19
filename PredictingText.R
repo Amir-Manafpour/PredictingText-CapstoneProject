@@ -14,6 +14,7 @@ library(cld3)
 library(data.table)
 library(knitr)
 library(gridExtra)
+library(beepr)
 
 ## ----data-import-funcs, echo=TRUE------------------------------------------------------------
 # Function used to load text files in current directory as data.table
@@ -347,46 +348,52 @@ predictNxtWrd <- function(inputsent, returnScores = F) {
 memory.limit(100000)
 
 ## ----model-testing, eval=FALSE---------------------------------------------------------------
-# profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
-# 
-# setwd("C:/Users/amanafpour/Desktop/final/en_US")
-# linesnmax = 500000
-# trainnsamp = 10000
-# testnsamp = 10000
-# cover = .5
-# maximumngrams = 5
-# 
-# set.seed(34341)
-# trainDt <- getImportDt(linesnmax = linesnmax, nsamp = trainnsamp)
-# trainCorp <- dtToQcorp(trainDt)
-# 
-# trainFreqMat <- getFreqMatrix(trainCorp, maxngram = maximumngrams, coverage = cover)
-# trainPmat <- getProbMatrix(trainFreqMat)
-# setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
-# saveRDS(trainPmat, file = paste("trainPmat", trainnsamp, "lines_", maximumngrams, "gram_", cover, "cover.RDS", sep=""))
+setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
+profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
+
+setwd("C:/Users/amanafpour/Desktop/final/en_US")
+linesnmax = 500000
+trainnsamp = 100000
+testnsamp = 10000
+cover = 1.0
+maximumngrams = 5
+
+set.seed(34341)
+trainDt <- getImportDt(linesnmax = linesnmax, nsamp = trainnsamp)
+trainCorp <- dtToQcorp(trainDt)
+
+trainFreqMat <- getFreqMatrix(trainCorp, maxngram = maximumngrams, coverage = cover)
+trainPmat <- getProbMatrix(trainFreqMat)
+setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
+saveRDS(trainPmat, file = paste("trainPmat", trainnsamp, "lines_", maximumngrams, "gram_", cover, "cover.RDS", sep=""))
+beep()
 
 # set.seed(789)
 # testDt <- getImportDt(linesnmax = linesnmax, nsamp = testnsamp, skip = linesnmax)
 # setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
 # saveRDS(testDt, file = paste("testDt", testnsamp, "lines.RDS", sep=""))
 
-setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
-profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
+
+
 
 # Read input mat from directory
-inputpmat_orig <<- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
-inputpmat <- inputpmat_orig
+# inputpmat_orig <- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
+# inputpmat <<- inputpmat_orig
+
+
+
+
 
 # Run benchmark on all ngrams
-bmlist <- list()
-for (n in 2:5){
-  inputpmat <<- inputpmat_orig[2:n]
-  bmlist[n] <- benchmark(predictNxtWrd,
-                         sent.list = list('tweets' = tweets, 
-                                          'blogs' = blogs))
-}
-
-saveRDS(bmlist, file = paste("bmresults_1000testlines_","10000lines_5gram",".RDS", sep= ""))
+# bmlist <- list()
+# for (n in 2:5){
+#   inputpmat <<- inputpmat_orig[2:n]
+#   bmlist[n] <- benchmark(predictNxtWrd,
+#                          sent.list = list('tweets' = tweets, 
+#                                           'blogs' = blogs))
+# }
+# 
+# saveRDS(bmlist, file = paste("bmresults_1000testlines_","10000lines_5gram",".RDS", sep= ""))
 
 # testDt <- readRDS("testDt1000lines.RDS")
 # testCorp <- dtToQcorp(testDt)
