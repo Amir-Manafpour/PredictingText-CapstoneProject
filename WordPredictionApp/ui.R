@@ -8,26 +8,25 @@
 #
 
 library(shiny)
+library(DT)
 
 # Define UI for application that draws a histogram
 shinyUI(fluidPage(
 
     # Application title
-    titlePanel("Old Faithful Geyser Data"),
+    titlePanel("3-gram Word Prediction App"),
 
     # Sidebar with a slider input for number of bins
-    sidebarLayout(
+    sidebarLayout(position = "left",
         sidebarPanel(
-            sliderInput("bins",
-                        "Number of bins:",
-                        min = 1,
-                        max = 50,
-                        value = 30)
+            textInput("sentInput",
+                      "Enter text below:")
         ),
 
         # Show a plot of the generated distribution
         mainPanel(
-            plotOutput("distPlot")
+            h2("Prediction Results"),
+            DT::dataTableOutput("predResults")
         )
     )
 ))
