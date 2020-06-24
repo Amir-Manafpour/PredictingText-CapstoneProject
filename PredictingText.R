@@ -377,6 +377,7 @@ profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", wa
 
 
 # Read input mat from directory
+setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
 inputpmat_orig <- readRDS(paste("trainPmat1e+05lines_5gram_1cover.RDS",sep = ""))
 
 newpmat <<- inputpmat_orig
