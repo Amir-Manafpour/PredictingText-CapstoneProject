@@ -351,22 +351,22 @@ memory.limit(100000)
 setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
 profanity <<- readLines("http://www.bannedwordlist.com/lists/swearWords.txt", warn = F)
 
-setwd("C:/Users/amanafpour/Desktop/final/en_US")
-linesnmax = 500000
-trainnsamp = 100000
-testnsamp = 10000
-cover = 1.0
-maximumngrams = 5
-
-set.seed(34341)
-trainDt <- getImportDt(linesnmax = linesnmax, nsamp = trainnsamp)
-trainCorp <- dtToQcorp(trainDt)
-
-trainFreqMat <- getFreqMatrix(trainCorp, maxngram = maximumngrams, coverage = cover)
-trainPmat <- getProbMatrix(trainFreqMat)
-setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
-saveRDS(trainPmat, file = paste("trainPmat", trainnsamp, "lines_", maximumngrams, "gram_", cover, "cover.RDS", sep=""))
-beep()
+# setwd("C:/Users/amanafpour/Desktop/final/en_US")
+# linesnmax = 500000
+# trainnsamp = 100000
+# testnsamp = 10000
+# cover = 1.0
+# maximumngrams = 5
+# 
+# set.seed(34341)
+# trainDt <- getImportDt(linesnmax = linesnmax, nsamp = trainnsamp)
+# trainCorp <- dtToQcorp(trainDt)
+# 
+# trainFreqMat <- getFreqMatrix(trainCorp, maxngram = maximumngrams, coverage = cover)
+# trainPmat <- getProbMatrix(trainFreqMat)
+# setwd("C:/Users/amanafpour/Documents/GitHub/PredictingText-CapstoneProject/Saved Data")
+# saveRDS(trainPmat, file = paste("trainPmat", trainnsamp, "lines_", maximumngrams, "gram_", cover, "cover.RDS", sep=""))
+# beep()
 
 # set.seed(789)
 # testDt <- getImportDt(linesnmax = linesnmax, nsamp = testnsamp, skip = linesnmax)
@@ -377,12 +377,17 @@ beep()
 
 
 # Read input mat from directory
-# inputpmat_orig <- readRDS(paste("trainPmat10000lines_5gram_1cover.RDS",sep = ""))
-# inputpmat <<- inputpmat_orig
+inputpmat_orig <- readRDS(paste("trainPmat1e+05lines_5gram_1cover.RDS",sep = ""))
 
+newpmat <<- inputpmat_orig
+# Only leave first 3 lines for 1-gram
+newpmat[[1]] <- newpmat[[1]][1:3]
+# Subselect terms with freq > 1 and only selected required columns
+for (n in 2:5) {
+  newpmat[[n]] <- newpmat[[n]][freq>1, c("remainingTerm", "p", "lastWrd")]
+}
 
-
-
+inputpmat <<- newpmat
 
 # Run benchmark on all ngrams
 # bmlist <- list()
